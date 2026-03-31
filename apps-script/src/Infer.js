@@ -1,129 +1,118 @@
 /**
  * Infer.js — Compute daily deltas from cumulative data.
+ * Optimized: O(n) hash-map approach instead of O(n²) linear scan.
  */
 
 /**
  * Compute daily metrics from raw cumulative data.
- * Reads raw_cumulative, groups by key, sorts by date, computes deltas.
- * Writes results to fact_daily_metric.
+ * Groups by dimension key, sorts each group by date, computes sequential deltas.
  *
  * @param {string} [onlyMonth] - Optional "YYYY-MM" to limit processing
  */
 function computeDailyDeltas(onlyMonth) {
   var rawData = readSheetData(CONFIG.SHEET_NAMES.RAW_CUMULATIVE);
-  if (rawData.length === 0) return;
+  if (rawData.length === 0) {
+    Logger.log('No raw data to process.');
+    return;
+  }
 
-  var grouped = {};
+  Logger.log('Computing deltas from ' + rawData.length + ' raw rows...');
+
+  var dimGroups = {};
 
   for (var i = 0; i < rawData.length; i++) {
     var row = rawData[i];
-    var date = row['business_date'];
+    var dateStr = formatDateStr(row['business_date']);
 
-    if (onlyMonth) {
-      var dateStr = formatDateStr(date);
-      if (dateStr.substring(0, 7) !== onlyMonth) continue;
-    }
+    if (onlyMonth && dateStr.substring(0, 7) !== onlyMonth) continue;
 
-    var key = [
-      formatDateStr(date),
+    var scorePct = parseFloat(row['score_pct']);
+    var metricN = parseInt(row['metric_n'], 10);
+    if (isNaN(scorePct) || isNaN(metricN)) continue;
+
+    var dimKey = [
       row['store_id'],
       row['time_bucket'],
       row['sales_channel'],
       row['metric_name']
     ].join('|||');
 
-    if (!grouped[key]) {
-      grouped[key] = [];
+    if (!dimGroups[dimKey]) {
+      dimGroups[dimKey] = {};
     }
-    grouped[key].push(row);
+
+    if (!dimGroups[dimKey][dateStr] || metricN >= parseInt(dimGroups[dimKey][dateStr]['metric_n'], 10)) {
+      dimGroups[dimKey][dateStr] = row;
+    }
   }
 
   var factRows = [];
+  var dimKeys = Object.keys(dimGroups);
 
-  var keys = Object.keys(grouped);
-  for (var k = 0; k < keys.length; k++) {
-    var entries = grouped[keys[k]];
-    var latest = entries[entries.length - 1];
+  for (var d = 0; d < dimKeys.length; d++) {
+    var dateMap = dimGroups[dimKeys[d]];
+    var dates = Object.keys(dateMap).sort();
 
-    var parts = keys[k].split('|||');
-    var businessDate = parts[0];
-    var storeId = parts[1];
-    var timeBucket = parts[2];
-    var salesChannel = parts[3];
-    var metricName = parts[4];
+    for (var di = 0; di < dates.length; di++) {
+      var currentDate = dates[di];
+      var current = dateMap[currentDate];
 
-    var cumScorePct = parseFloat(latest['score_pct']);
-    var cumN = parseInt(latest['metric_n'], 10);
+      var cumScorePct = parseFloat(current['score_pct']);
+      var cumN = parseInt(current['metric_n'], 10);
+      var cumNumerator = Math.round(cumScorePct * cumN);
 
-    if (isNaN(cumScorePct) || isNaN(cumN)) continue;
+      var dailyScorePct = null;
+      var dailyN = null;
+      var dailyNumerator = null;
 
-    var cumNumerator = Math.round(cumScorePct * cumN);
+      if (di > 0) {
+        var prevDate = dates[di - 1];
+        var prev = dateMap[prevDate];
+        var prevScorePct = parseFloat(prev['score_pct']);
+        var prevN = parseInt(prev['metric_n'], 10);
+        var prevNumerator = Math.round(prevScorePct * prevN);
 
-    var prevKey = findPreviousDayKey(rawData, businessDate, storeId, timeBucket, salesChannel, metricName);
-    var dailyScorePct = null;
-    var dailyN = null;
-    var dailyNumerator = null;
-
-    if (prevKey) {
-      var prevCumScorePct = parseFloat(prevKey['score_pct']);
-      var prevCumN = parseInt(prevKey['metric_n'], 10);
-      if (!isNaN(prevCumScorePct) && !isNaN(prevCumN)) {
-        var prevCumNumerator = Math.round(prevCumScorePct * prevCumN);
-        dailyN = cumN - prevCumN;
-        dailyNumerator = cumNumerator - prevCumNumerator;
+        dailyN = cumN - prevN;
+        dailyNumerator = cumNumerator - prevNumerator;
+        if (dailyN > 0) {
+          dailyScorePct = dailyNumerator / dailyN;
+        } else if (dailyN === 0) {
+          dailyScorePct = null;
+        }
+      } else {
+        dailyN = cumN;
+        dailyNumerator = cumNumerator;
         if (dailyN > 0) {
           dailyScorePct = dailyNumerator / dailyN;
         }
       }
-    } else {
-      dailyN = cumN;
-      dailyNumerator = cumNumerator;
-      if (dailyN > 0) {
-        dailyScorePct = dailyNumerator / dailyN;
-      }
-    }
 
-    factRows.push([
-      businessDate, storeId, latest['store_name'], timeBucket, salesChannel,
-      metricName, cumScorePct, cumN, cumNumerator,
-      dailyScorePct, dailyN, dailyNumerator,
-      latest['source_file_name'], latest['message_id'],
-      latest['run_id'], new Date().toISOString()
-    ]);
+      factRows.push([
+        currentDate,
+        current['store_id'],
+        current['store_name'],
+        current['time_bucket'],
+        current['sales_channel'],
+        current['metric_name'],
+        cumScorePct, cumN, cumNumerator,
+        dailyScorePct, dailyN, dailyNumerator,
+        current['source_file_name'],
+        current['message_id'],
+        current['run_id'],
+        new Date().toISOString()
+      ]);
+    }
   }
+
+  Logger.log('Computed ' + factRows.length + ' fact rows.');
 
   if (factRows.length > 0) {
     clearSheetData(CONFIG.SHEET_NAMES.FACT_DAILY);
-    appendRows(CONFIG.SHEET_NAMES.FACT_DAILY, factRows, CONFIG.FACT_HEADERS);
-  }
-}
-
-/**
- * Find the previous day's cumulative record for the same key.
- */
-function findPreviousDayKey(allRaw, currentDateStr, storeId, timeBucket, salesChannel, metricName) {
-  var currentDate = new Date(currentDateStr);
-  var bestMatch = null;
-  var bestDate = null;
-
-  for (var i = 0; i < allRaw.length; i++) {
-    var row = allRaw[i];
-    var rowDateStr = formatDateStr(row['business_date']);
-    var rowDate = new Date(rowDateStr);
-
-    if (rowDate >= currentDate) continue;
-    if (row['store_id'] != storeId) continue;
-    if (row['time_bucket'] != timeBucket) continue;
-    if (row['sales_channel'] != salesChannel) continue;
-    if (row['metric_name'] != metricName) continue;
-
-    if (!bestDate || rowDate > bestDate) {
-      bestDate = rowDate;
-      bestMatch = row;
-    }
+    var sheet = getOrCreateSheet(CONFIG.SHEET_NAMES.FACT_DAILY, CONFIG.FACT_HEADERS);
+    sheet.getRange(2, 1, factRows.length, factRows[0].length).setValues(factRows);
   }
 
-  return bestMatch;
+  Logger.log('Daily deltas written to ' + CONFIG.SHEET_NAMES.FACT_DAILY);
 }
 
 /**

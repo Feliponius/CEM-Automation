@@ -35,7 +35,7 @@ function parseHeaderMetadata(lines) {
     if (line.indexOf('Time of Day:') !== -1) {
       var match = line.match(/'([^']+)'/);
       if (match) {
-        meta.timeBucket = match[1];
+        meta.timeBucket = normalizeTimeBucket(match[1]);
       }
     }
   }

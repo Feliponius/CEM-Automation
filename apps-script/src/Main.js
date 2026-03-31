@@ -7,16 +7,17 @@ function onOpen() {
     .addItem('Initialize Sheets', 'initializeSheets')
     .addSeparator()
     .addItem('Run Daily Pipeline', 'runDailyPipeline')
-    .addItem('Backfill March 2026', 'backfillMarch')
+    .addItem('Backfill March (Ingest Only)', 'backfillMarchIngest')
     .addSeparator()
-    .addItem('Recompute Daily Deltas', 'recomputeDeltas')
+    .addItem('Compute Daily Deltas', 'recomputeDeltas')
+    .addItem('Compute March Deltas Only', 'computeMarchDeltas')
     .addToUi();
 }
 
-/**
- * Main daily pipeline — runs on time-driven trigger.
- * Fetches recent CEM emails, parses, stores, infers daily.
- */
+// ─────────────────────────────────────────────────────────
+// DAILY PIPELINE
+// ─────────────────────────────────────────────────────────
+
 function runDailyPipeline() {
   var runId = 'run_' + new Date().getTime();
   var filesProcessed = 0;
@@ -38,7 +39,6 @@ function runDailyPipeline() {
     for (var i = 0; i < messages.length; i++) {
       var msg = messages[i];
       var msgId = msg.getId();
-
       if (processedIds[msgId]) continue;
 
       var result = processOneMessage(msg, runId);
@@ -54,16 +54,10 @@ function runDailyPipeline() {
     computeDailyDeltas();
 
     var missingBuckets = findMissingBuckets(bucketsFound);
-
     logAliasIssues(aliasIssues, runId);
-
     logRun(runId, 'success', emailsFound, filesProcessed, rowsWritten, missingBuckets, [], '');
 
-    if (missingBuckets.length > 0) {
-      Logger.log('WARNING: Missing time buckets: ' + missingBuckets.join(', '));
-    }
-
-    Logger.log('Pipeline complete. Processed ' + filesProcessed + ' files, ' + rowsWritten + ' rows.');
+    Logger.log('Pipeline complete. ' + filesProcessed + ' files, ' + rowsWritten + ' rows.');
 
   } catch (e) {
     logRun(runId, 'error', 0, filesProcessed, rowsWritten, [], [], e.message + '\n' + e.stack);
@@ -72,9 +66,10 @@ function runDailyPipeline() {
   }
 }
 
-/**
- * Process a single Gmail message: extract CSV, parse, store raw rows.
- */
+// ─────────────────────────────────────────────────────────
+// PROCESS ONE MESSAGE
+// ─────────────────────────────────────────────────────────
+
 function processOneMessage(message, runId) {
   var csv = extractCsvAttachment(message);
   if (!csv) return null;
@@ -121,9 +116,10 @@ function processOneMessage(message, runId) {
   };
 }
 
-/**
- * Find which expected time buckets are missing from a set of found buckets.
- */
+// ─────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────
+
 function findMissingBuckets(foundBuckets) {
   var missing = [];
   for (var i = 0; i < CONFIG.EXPECTED_TIME_BUCKETS.length; i++) {
@@ -135,46 +131,40 @@ function findMissingBuckets(foundBuckets) {
   return missing;
 }
 
-/**
- * Log any unrecognized metric names to the alias_report sheet.
- */
 function logAliasIssues(issues, runId) {
   if (!issues || issues.length === 0) return;
-
   var rows = [];
   for (var i = 0; i < issues.length; i++) {
     rows.push([
-      runId,
-      issues[i].fileName,
-      issues[i].rawName,
-      issues[i].timeBucket,
-      issues[i].dateRange,
-      new Date().toISOString()
+      runId, issues[i].fileName, issues[i].rawName,
+      issues[i].timeBucket, issues[i].dateRange, new Date().toISOString()
     ]);
   }
-
   appendRows(CONFIG.SHEET_NAMES.ALIAS_REPORT, rows,
     ['run_id', 'file_name', 'raw_metric_name', 'time_bucket', 'date_range', 'detected_at']);
 }
 
-/**
- * Manually recompute all daily deltas from existing raw data.
- */
+// ─────────────────────────────────────────────────────────
+// STANDALONE DELTA COMPUTATION (no Gmail, no ingestion)
+// ─────────────────────────────────────────────────────────
+
 function recomputeDeltas() {
+  Logger.log('Starting full delta recomputation...');
   computeDailyDeltas();
-  Logger.log('Daily deltas recomputed from raw cumulative data.');
+  Logger.log('Done.');
+}
+
+function computeMarchDeltas() {
+  Logger.log('Starting March 2026 delta computation...');
+  computeDailyDeltas('2026-03');
+  Logger.log('Done.');
 }
 
 // ─────────────────────────────────────────────────────────
-// BACKFILL: Import entire month of March 2026
+// BACKFILL: Ingest only (no delta computation)
 // ─────────────────────────────────────────────────────────
 
-/**
- * Backfill all March 2026 CEM emails.
- * Ignores dedup — processes everything in the date window.
- * Logs all metric alias variations found.
- */
-function backfillMarch() {
+function backfillMarchIngest() {
   var runId = 'backfill_march_' + new Date().getTime();
   var filesProcessed = 0;
   var rowsWritten = 0;
@@ -184,16 +174,23 @@ function backfillMarch() {
 
   try {
     initializeSheets();
+    var processedIds = getProcessedMessageIds();
 
     var messages = searchCemEmails('2026/03/01', '2026/04/01');
     var emailsFound = messages.length;
-
     Logger.log('Found ' + emailsFound + ' CEM emails for March 2026.');
 
     messages.sort(function(a, b) { return a.getDate() - b.getDate(); });
 
     for (var i = 0; i < messages.length; i++) {
       var msg = messages[i];
+      var msgId = msg.getId();
+
+      if (processedIds[msgId]) {
+        Logger.log('Skipping already-processed: ' + msg.getSubject());
+        continue;
+      }
+
       var csv = extractCsvAttachment(msg);
       if (!csv) continue;
 
@@ -256,56 +253,32 @@ function backfillMarch() {
       }
 
       filesProcessed++;
-
-      markMessageProcessed(msg.getId(), msg.getSubject(), msg.getDate().toISOString(), runId);
+      markMessageProcessed(msgId, msg.getSubject(), msg.getDate().toISOString(), runId);
     }
-
-    computeDailyDeltas('2026-03');
 
     logAliasIssues(allAliasIssues, runId);
-
     writeBackfillMetricReport(dateMetricLog, runId);
-
     logRun(runId, 'success', emailsFound, filesProcessed, rowsWritten, [], [], '');
 
-    Logger.log('March backfill complete: ' + filesProcessed + ' files, ' + rowsWritten + ' rows.');
-    Logger.log('Time buckets found: ' + allBuckets.join(', '));
-    Logger.log('Alias issues: ' + allAliasIssues.length);
-
-    if (allAliasIssues.length > 0) {
-      Logger.log('UNRECOGNIZED METRICS:');
-      for (var a = 0; a < allAliasIssues.length; a++) {
-        Logger.log('  ' + allAliasIssues[a].rawName + ' in ' + allAliasIssues[a].fileName);
-      }
-    }
+    Logger.log('Ingest complete: ' + filesProcessed + ' new files, ' + rowsWritten + ' rows.');
+    Logger.log('Time buckets: ' + allBuckets.join(', '));
+    Logger.log('NOW RUN "Compute March Deltas Only" separately.');
 
   } catch (e) {
     logRun(runId, 'error', 0, filesProcessed, rowsWritten, [], [], e.message + '\n' + e.stack);
-    Logger.log('Backfill FAILED: ' + e.message);
+    Logger.log('Backfill ingest FAILED: ' + e.message);
     throw e;
   }
 }
 
-/**
- * Write a detailed report of which metric names appeared in each file.
- * This catches mid-month name changes like "Fast Service" → "Speed of Service".
- */
 function writeBackfillMetricReport(dateMetricLog, runId) {
   var sheetName = 'backfill_metric_audit';
   var headers = ['run_id', 'report_end_date', 'time_bucket', 'subject', 'raw_metric_names'];
   var rows = [];
-
   for (var i = 0; i < dateMetricLog.length; i++) {
     var entry = dateMetricLog[i];
-    rows.push([
-      runId,
-      entry.date,
-      entry.timeBucket,
-      entry.subject,
-      entry.rawMetrics.join(' | ')
-    ]);
+    rows.push([runId, entry.date, entry.timeBucket, entry.subject, entry.rawMetrics.join(' | ')]);
   }
-
   if (rows.length > 0) {
     getOrCreateSheet(sheetName, headers);
     appendRows(sheetName, rows, headers);

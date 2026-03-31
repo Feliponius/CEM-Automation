@@ -76,7 +76,28 @@ function normalizeMetricName(raw) {
 var SUBJECT_TO_BUCKET = {
   'breakfast': 'Before 10:30 AM',
   'lunch': '10:30 AM to 2 PM',
+  '10:30 - 2:0': '10:30 AM to 2 PM',
   'afternoon': '2 PM to 5 PM',
   'dinner rush': '5PM to 7 PM',
   'closing': 'After 7 PM'
 };
+
+/**
+ * Normalize time bucket strings.
+ * Handles slight variations like "5 PM to 7 PM" vs "5PM to 7 PM".
+ */
+var TIME_BUCKET_ALIASES = {
+  'before 10:30 am': 'Before 10:30 AM',
+  '10:30 am to 2 pm': '10:30 AM to 2 PM',
+  '10:30 - 2:0': '10:30 AM to 2 PM',
+  '2 pm to 5 pm': '2 PM to 5 PM',
+  '5pm to 7 pm': '5PM to 7 PM',
+  '5 pm to 7 pm': '5PM to 7 PM',
+  'after 7 pm': 'After 7 PM'
+};
+
+function normalizeTimeBucket(raw) {
+  if (!raw) return raw;
+  var key = raw.toLowerCase().replace(/^\s+|\s+$/g, '');
+  return TIME_BUCKET_ALIASES[key] || raw;
+}
