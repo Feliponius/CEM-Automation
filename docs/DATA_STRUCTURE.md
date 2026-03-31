@@ -135,11 +135,34 @@ Not all channels appear in every time bucket. Channels with zero responses are o
 |--------|-------|----------|-------|
 | `overall_satisfaction` | 1 | **Primary** | Top-line KPI |
 | `taste_of_food` | 1 | Secondary | |
-| `fast_service` | 1 | Secondary | |
-| `attentive_friendly` | 1 | Secondary | |
+| `fast_service` | 1 | Secondary | **Known alias: "Speed of Service"** — may change mid-month |
+| `attentive_friendly` | 1 | Secondary | Known aliases: "Attentive / Friendly", "Attentive & Courteous" |
 | `cleanliness` | 2 | Secondary | |
-| `portion_size` | 2 | Secondary | n often differs from Count |
-| `order_accuracy` | 2 | Secondary | Y/N question |
+| `portion_size` | 2 | Secondary | n often differs from Count; alias: "Portion Size" |
+| `order_accuracy` | 2 | Secondary | Y/N question; alias: "Order Accuracy" (without Y/N) |
+
+---
+
+## Metric Alias Map
+
+SMG occasionally changes metric header names mid-month. The parser normalizes all known variants to canonical names. Unknown names are logged to the `alias_report` sheet for manual review.
+
+| Raw Header (case-insensitive) | Canonical Name |
+|-------------------------------|---------------|
+| Overall Satisfaction | `overall_satisfaction` |
+| Taste of Food | `taste_of_food` |
+| Fast Service | `fast_service` |
+| **Speed of Service** | `fast_service` |
+| Attentive/Friendly | `attentive_friendly` |
+| Attentive / Friendly | `attentive_friendly` |
+| Attentive & Courteous | `attentive_friendly` |
+| Cleanliness | `cleanliness` |
+| Portion Size of Food | `portion_size` |
+| Portion Size | `portion_size` |
+| Order Accuracy Y/N | `order_accuracy` |
+| Order Accuracy | `order_accuracy` |
+
+The backfill script writes a `backfill_metric_audit` sheet showing exactly which raw metric names appeared in each file, so you can confirm when aliases changed.
 
 ---
 
