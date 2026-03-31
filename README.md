@@ -1,39 +1,59 @@
-# CEM Automation
+# Eleanor — CEM Automation
 
-Responsible for taking CEM (Customer Experience Management) daily reports and creating a clear view of each day's scores with meaningful breakdowns.
+Daily customer experience insights, automatically.
 
-## The Problem
+## What It Does
 
-Daily CEM reports arrive in CSV format with **cumulative** data—each day's report contains that day's scores + all previous days of the month. This makes manual analysis difficult:
+Ingests daily SMG CEM reports from Gmail, infers per-day performance from cumulative data, posts leadership Slack summaries, and powers Looker Studio dashboards.
 
-- **March 3rd report**: Count: 36, Score: 53%
-- **March 6th report**: Count: 52, Score: 62%
+Every morning by 7 AM, leadership knows: how yesterday went, how the month is trending, and where to focus today.
 
-To understand individual day performance, we need to derive daily deltas from the cumulative totals.
+## Stack
 
-## Goals
+| Layer | Technology |
+|-------|-----------|
+| Ingestion | Apps Script + Gmail |
+| Storage | Google Sheets |
+| Compute | Apps Script (daily delta inference) |
+| Delivery | Slack Bot API |
+| Visualization | Looker Studio |
+| Scheduling | Apps Script Time-driven Triggers |
 
-1. **Breakdown cumulative data** into daily scores and counts
-2. **Analyze by Day of Week** (Mon–Sat, excluding Sunday)
-3. **Analyze by Week of Month** (1st, 2nd, 3rd, 4th, 5th)
-4. **Breakdown by Sales Channel** (when data available)
-5. **Breakdown by Time Slot** (when data available)
+## Data Source
+
+Daily emails from `SMGMailMgr@whysmg.com` with subject:
+```
+SMG Reporting: Daily Sales Channel Breakout by Time - {TimeBucket}
+```
+
+5 emails/day (Breakfast, Lunch, Afternoon, Dinner Rush, Closing), each with one CSV attachment containing cumulative month-to-date CEM scores across 7 metrics and multiple sales channels.
+
+## Metrics
+
+| Metric | Priority |
+|--------|----------|
+| Overall Satisfaction | **Primary** |
+| Taste of Food | Secondary |
+| Fast Service | Secondary |
+| Attentive/Friendly | Secondary |
+| Cleanliness | Secondary |
+| Portion Size of Food | Secondary |
+| Order Accuracy | Secondary |
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [PROPOSAL.md](docs/PROPOSAL.md) | Full proposal with approach, math, and data flow |
-| [PLAN.md](docs/PLAN.md) | Implementation plan and phases |
-| [STACK.md](docs/STACK.md) | Stack recommendation (Sheets / Apps Script / Gmail) |
-| [DATA_STRUCTURE.md](docs/DATA_STRUCTURE.md) | Expected CSV structure and sample format |
+| [PROPOSAL.md](docs/PROPOSAL.md) | Full system vision, data flow, delivery design |
+| [PLAN.md](docs/PLAN.md) | Implementation phases and technical architecture |
+| [STACK.md](docs/STACK.md) | Technology stack details and migration path |
+| [DATA_STRUCTURE.md](docs/DATA_STRUCTURE.md) | CSV format reference and target schema |
+| [GAP_ANALYSIS.md](docs/GAP_ANALYSIS.md) | Comprehensive gap analysis and risk register |
+
+## Samples
+
+See `samples/` for real CSV examples from SMG reports.
 
 ## Quick Start
 
-Once data collection is confirmed, see [PLAN.md](docs/PLAN.md) for implementation steps.
-
-## Sales Channel & Time Slot Reference
-
-**Sales Channels:** Carry Out, Curbside, Dine In, Drive Thru, Mobile Carry Out, Mobile Dine In, Mobile Drive Thru
-
-**Time Slots:** Before 10:30 AM, 10:30 AM to 2 PM, 2 PM to 5 PM, 5 PM to 7 PM, After 7 PM
+See [PLAN.md](docs/PLAN.md) for implementation phases. Phase 1 = core pipeline (Gmail → parse → store → infer daily).

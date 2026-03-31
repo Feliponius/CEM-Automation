@@ -1,169 +1,214 @@
-# CEM Score Automation — Proposal
+# Eleanor — CEM Daily Insights System
+
+> Updated: 2026-03-31
+
+---
 
 ## Executive Summary
 
-This proposal outlines an automated system to process daily CEM (Customer Experience Management) CSV reports, derive daily scores from cumulative data, and produce breakdowns by Day of Week, Week of Month, Sales Channel, and Time Slot.
+Eleanor is an automated customer experience monitoring system that transforms daily SMG cumulative reports into actionable daily insights. It ingests CSV attachments from Gmail, infers per-day performance from cumulative data, delivers Slack summaries to leadership, and powers Looker Studio dashboards for deep-dive analysis.
+
+The system is designed for leadership teams with moderate tech ability and limited time — every output is scannable, color-coded, and tells you what to do, not just what happened.
 
 ---
 
-## 1. The Cumulative Data Challenge
+## 1. The Problem
 
-### Current State
+### What we receive
+SMG sends 5 emails daily (one per time-of-day bucket) containing CSV attachments with **cumulative month-to-date** CEM scores. Each day's report includes all previous days of the month.
 
-Each daily report is **month-to-date cumulative**:
+### Why that's hard
+- You can't see how yesterday went without comparing two cumulative snapshots
+- 7 metrics × 5 time buckets × 7 sales channels = 245 data points per day
+- Per-metric sample sizes (`n`) differ — simple percentage deltas are misleading
+- Late-arriving responses (2-day SMG window) can change previously reported numbers
+- Manual analysis takes 30+ minutes/day and is error-prone
 
-| Report Date | Cumulative Count | Cumulative Score |
-|-------------|------------------|------------------|
-| March 3     | 36               | 53%              |
-| March 6     | 52               | 62%              |
-| March 10    | 78               | 58%              |
+### What we need
+A system that runs at 2:30 AM daily and by the time leadership checks Slack at 7 AM, they know:
+1. How did we do yesterday? (Overall + by bucket + by channel)
+2. How are we trending this month?
+3. Where should we focus today?
+4. Are there any data quality concerns?
 
-The cumulative score is a **weighted average** of all responses so far in the month, not a simple average of daily scores.
+---
 
-### Math for Daily Deltas
-
-To get **daily** count and score:
-
-1. **Daily Count** = Today's cumulative count − Yesterday's cumulative count  
-   - Example: March 6 daily count = 52 − 36 = **16**
-
-2. **Daily Score** (weighted average interpretation):  
-   - Cumulative score = (Sum of all responses × their scores) / Total count  
-   - We cannot perfectly reverse this without raw response-level data.  
-   - **Approximation**: Treat cumulative score as the month-to-date average. Daily contribution can be estimated using:
-     - **Option A**: Store cumulative (count, score) each day and compute deltas; use cumulative score as the "effective" score for that period.
-     - **Option B**: If we only have (count, score) per day, we can **back-calculate** daily weighted contribution:
-       - `New_Cumulative_Score = (Old_Count × Old_Score + Daily_Count × Daily_Score) / New_Count`
-       - Solving for `Daily_Score`:  
-         `Daily_Score = (New_Count × New_Score − Old_Count × Old_Score) / Daily_Count`
-
-**Formula for Daily Score (derived):**
+## 2. Data Flow
 
 ```
-Daily_Score = (Cumulative_Count_today × Cumulative_Score_today − Cumulative_Count_yesterday × Cumulative_Score_yesterday) / Daily_Count
+SMG (5 emails/day)
+    │
+    ▼
+Gmail Inbox (SMGMailMgr@whysmg.com)
+    │
+    ▼
+Apps Script Pipeline (2:30 AM trigger)
+    ├── Extract CSV attachments
+    ├── Parse header metadata (date range, time bucket)
+    ├── Parse Block 1: Overall Satisfaction, Taste, Fast Service, Attentive/Friendly
+    ├── Parse Block 2: Cleanliness, Portion Size, Order Accuracy
+    ├── Normalize: store ID split, sentinel handling, canonical names
+    ├── Store raw cumulative → raw_cumulative sheet
+    ├── Compute daily deltas → fact_daily_metric sheet
+    ├── Reprocess trailing 3 days (late responses)
+    ├── Run data quality checks
+    ├── Build Slack summary
+    │
+    ▼
+┌─────────────────┐    ┌──────────────────────┐
+│  Slack Bot       │    │  Looker Studio        │
+│  Daily digest    │    │  Interactive dashboard │
+│  to leadership   │    │  for drill-down        │
+└─────────────────┘    └──────────────────────┘
 ```
 
-Example:  
-- March 3: 36 × 0.53 = 19.08  
-- March 6: 52 × 0.62 = 32.24  
-- Daily (Mar 4–6): Count = 16, Score = (32.24 − 19.08) / 16 = **82.25%**
-
-*(Note: This assumes the report covers multiple days if we only get reports every few days. If reports are truly daily, we get one day at a time.)*
-
 ---
 
-## 2. Breakdown Dimensions
+## 3. Daily Inference Math
 
-### 2.1 Score by Day of Week (Mon–Sat)
-
-- **Input**: Daily (date, count, score) after delta calculation
-- **Output**: For each weekday Mon–Sat, compute:
-  - Total count
-  - Weighted average score
-  - Number of days in sample
-- **Exclusion**: Sunday (per requirement)
-
-### 2.2 Score by Week of Month
-
-- **Week 1**: Days 1–7  
-- **Week 2**: Days 8–14  
-- **Week 3**: Days 15–21  
-- **Week 4**: Days 22–28  
-- **Week 5**: Days 29–31 (partial week, "fuzzy" end-of-month)
-
-Alternative: Use calendar weeks (e.g., first full Mon–Sat of month) if that aligns better with operations.
-
-### 2.3 Score by Sales Channel
-
-**Channels:** Carry Out, Curbside, Dine In, Drive Thru, Mobile Carry Out, Mobile Dine In, Mobile Drive Thru
-
-- **Requirement**: CSV (or source data) must include a Sales Channel column
-- **Output**: Per channel: count, weighted score, % of total
-- **Status**: Pending confirmation of CSV structure
-
-### 2.4 Score by Time Slot
-
-**Slots:** Before 10:30 AM, 10:30 AM to 2 PM, 2 PM to 5 PM, 5 PM to 7 PM, After 7 PM
-
-- **Requirement**: CSV must include timestamp or time-slot column
-- **Output**: Per slot: count, weighted score, % of total
-- **Status**: Pending confirmation of CSV structure
-
----
-
-## 3. Data Flow (Proposed)
+Because reports are cumulative, we derive daily performance using weighted numerator deltas:
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  CEM Report     │     │  Gmail / Inbox   │     │  Apps Script    │
-│  (CSV attached) │────▶│  (daily email)   │────▶│  Trigger        │
-└─────────────────┘     └──────────────────┘     └────────┬────────┘
-                                                          │
-                                                          ▼
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Dashboards &    │◀────│  Google Sheets   │◀────│  Parse CSV      │
-│  Charts         │     │  (raw + derived)  │     │  Compute deltas │
-└─────────────────┘     └──────────────────┘     │  Build views    │
-                                                  └─────────────────┘
+cum_numerator(day) = round(cum_score_pct(day) × cum_n(day))
+
+daily_n = cum_n(today) − cum_n(yesterday)
+daily_numerator = cum_numerator(today) − cum_numerator(yesterday)
+
+daily_score_pct = daily_numerator / daily_n   (when daily_n > 0)
 ```
 
-1. **Ingest**: Gmail receives daily CEM email with CSV attachment
-2. **Extract**: Apps Script fetches attachment, parses CSV
-3. **Store**: Append raw row to "Raw Data" sheet (date, cumulative count, cumulative score, + any channel/time columns)
-4. **Compute**: Script derives daily (date, count, score) and writes to "Daily Data" sheet
-5. **Aggregate**: Script builds "Day of Week", "Week of Month", "Sales Channel", "Time Slot" summary sheets
-6. **Visualize**: Charts in Sheets or optional Data Studio / Looker Studio
+This is applied independently per metric (because each metric has its own `n`).
+
+**Why not just subtract percentages?**
+If yesterday's cumulative was 72% (n=81) and today is 69% (n=85), subtracting gives -3%, which is meaningless. The correct daily score for the 4 new responses is:
+```
+cum_numerator(yesterday) = round(0.72 × 81) = 58
+cum_numerator(today) = round(0.69 × 85) = 59
+daily_numerator = 59 − 58 = 1
+daily_n = 85 − 81 = 4
+daily_score = 1/4 = 25%
+```
 
 ---
 
-## 4. CSV Structure Assumptions
+## 4. Metrics
 
-### Minimum (for basic daily breakdown)
-
-| Column        | Example   | Notes                          |
-|---------------|-----------|--------------------------------|
-| Report_Date   | 2026-03-06| Date of report                 |
-| Cumulative_Count | 52     | Month-to-date response count   |
-| Cumulative_Score | 62%    | Month-to-date score (as % or 0–1) |
-
-### Extended (for channel & time breakdown)
-
-| Column        | Example        | Notes                    |
-|---------------|----------------|--------------------------|
-| Sales_Channel | Drive Thru     | One of the 7 channels    |
-| Time_Slot     | 10:30 AM to 2 PM| One of the 5 slots      |
-| Count         | 12             | Count for that segment   |
-| Score         | 65%            | Score for that segment   |
-
-*If the CSV is one row per day (single cumulative totals), we need to confirm whether channel/time breakdowns exist in the source system or require a different report format.*
+| Metric | Type | Priority | Notes |
+|--------|------|----------|-------|
+| Overall Satisfaction | Top-box % | **Primary** | The single number leadership sees first |
+| Taste of Food | Top-box % | Secondary | |
+| Fast Service | Top-box % | Secondary | |
+| Attentive/Friendly | Top-box % | Secondary | |
+| Cleanliness | Top-box % | Secondary | |
+| Portion Size of Food | Top-box % | Secondary | Often has lower n (not all respondents answer) |
+| Order Accuracy Y/N | Yes % | Secondary | Binary question; different interpretation |
 
 ---
 
-## 5. Edge Cases
+## 5. Dimensions
 
-- **Missing days**: If a report is skipped, we cannot compute that day's delta. Options: leave blank, interpolate, or flag.
-- **Month boundary**: First day of month has no "yesterday"; use 0 for previous cumulative.
-- **Week 5**: Short month (28–31 days); Week 5 may have 1–3 days. Document as "partial week."
-- **Multiple reports per day**: Define rule (e.g., use latest, or sum).
-
----
-
-## 6. Success Criteria
-
-- [ ] Daily scores and counts correctly derived from cumulative data
-- [ ] Day-of-week breakdown (Mon–Sat) with weighted averages
-- [ ] Week-of-month breakdown (1–5) with handling for partial Week 5
-- [ ] Sales channel breakdown (when data available)
-- [ ] Time slot breakdown (when data available)
-- [ ] Automated ingestion from Gmail (or manual upload fallback)
-- [ ] Clear documentation for future maintainers
+| Dimension | Values | Notes |
+|-----------|--------|-------|
+| Business Date | Daily | Derived from Comparison end date |
+| Store | 04465 - West Lufkin FSU (+ future locations) | Parsed from CSV |
+| Time Bucket | Before 10:30 AM, 10:30 AM to 2 PM, 2 PM to 5 PM, 5PM to 7 PM, After 7 PM | One CSV per bucket |
+| Sales Channel | Carry Out, Curbside, Dine In, Drive Thru, Mobile Carry Out, Mobile Dine In, Mobile Drive Thru | Varies by bucket; not all appear daily |
+| Day of Week | Monday–Saturday | Sunday excluded (closed) |
+| Week of Month | Week 1–5 | Week 5 = days 29–31 (partial) |
 
 ---
 
-## 7. Next Steps
+## 6. Leadership Delivery Design
 
-1. **Confirm CSV structure** — Obtain sample CSVs (basic + extended if possible)
-2. **Confirm report frequency** — Daily? Same time each day?
-3. **Choose stack** — See [STACK.md](STACK.md) for Sheets/Apps Script/Gmail recommendation
-4. **Implement Phase 1** — Raw ingest + daily delta + Day of Week + Week of Month
-5. **Implement Phase 2** — Channel and Time Slot (when data format is confirmed)
+### Design principles for the audience
+
+Leadership team members are:
+- **Moderate in tech ability**: They use Slack and can click links, but won't filter dashboards unprompted
+- **Low in executive function capacity**: They need the system to tell them what matters — not present raw data and expect synthesis
+
+### Slack daily digest rules
+
+1. **Scannable in <10 seconds**: Emoji indicators (🟢🟡🔴), bold primary metric, plain English
+2. **Tells you what to do**: "Where to focus" section with specific, actionable callouts
+3. **Consistent format**: Same structure every day builds habit and reduces cognitive load
+4. **Quiet on good days**: All green and stable → 2-line summary. Detailed breakdown only when there's movement or risk
+5. **No jargon**: Spell out "month-to-date" not "MTD" on first use. No "n" or "delta" in leader-facing output
+6. **Comparison context**: Every number includes "vs yesterday" or "vs target" — raw numbers alone are meaningless
+
+### Looker Studio dashboard rules
+
+1. **Default view requires zero clicks**: Executive Overview shows yesterday + MTD with no filters needed
+2. **Color-coded everything**: Green/yellow/red conditional formatting on all score cells
+3. **Drill-down is optional**: Curious leaders can explore; busy ones get what they need from page 1
+4. **Mobile-friendly**: Responsive layout — many will check on phones
+
+---
+
+## 7. Threshold System
+
+Targets are stored in `config_targets` sheet with support for:
+- **Retroactive changes**: Effective date range allows updating historical targets
+- **Granular or broad**: Set targets per metric/store/bucket/channel, or use wildcards (`*`) for blanket targets
+- **Three-tier status**: Green (≥ green_min), Yellow (≥ yellow_min), Red (< yellow_min)
+
+Example:
+| effective_start | metric | store | target_green_min | target_yellow_min |
+|----------------|--------|-------|-----------------|------------------|
+| 2026-03-01 | overall_satisfaction | * | 75% | 65% |
+| 2026-03-01 | fast_service | * | 65% | 55% |
+| 2026-03-15 | overall_satisfaction | 04465 | 78% | 68% |
+
+---
+
+## 8. Multi-Location Readiness
+
+Single location today, but the schema supports N locations from day 1:
+- Every row is keyed by `store_id`
+- `config_locations` manages the store registry
+- Slack channels are per-store (configurable)
+- Looker Studio store filter is built-in
+- Future: regional rollups, store-vs-store leaderboards
+
+---
+
+## 9. Edge Cases
+
+| Scenario | Handling |
+|----------|----------|
+| First day of month | Yesterday's cumulative = 0 across all metrics |
+| SMG late responses (2-day window) | Reprocess trailing 3 days on every run |
+| Missing time bucket email | Process what's available; flag gap in Slack and run_log |
+| Sentinel value `**` | Map to null; exclude from aggregation |
+| Negative daily_n after reprocessing | Data quality error; flag, don't propagate |
+| New sales channel appears | Auto-handled (parser reads whatever channels exist) |
+| New store appears in CSV | Auto-insert into config_locations with defaults |
+| All metrics green, no movement | Slack quiet mode: 2-line summary |
+
+---
+
+## 10. Success Criteria
+
+### v1 (launch)
+- [ ] Daily pipeline runs reliably at 2:30 AM with retry
+- [ ] All 7 metrics parsed from both CSV blocks
+- [ ] Daily deltas correctly inferred with per-metric n
+- [ ] Trailing 3-day reprocessing handles late responses
+- [ ] Slack daily digest posted to leadership channel
+- [ ] Slack message is scannable, actionable, and color-coded
+- [ ] Looker Studio dashboard with Executive Overview page
+- [ ] Config sheet for targets (editable, retroactive)
+- [ ] Run log with data quality flags
+- [ ] Pipeline failure alerts to admin Slack channel
+
+### v1.1 (fast follow)
+- [ ] Period-over-period comparisons (vs last week, vs last month)
+- [ ] Quiet mode for all-green days
+- [ ] Metric glossary / help reference
+- [ ] Backup export to Drive
+
+### v2 (expansion)
+- [ ] Multi-location with store leaderboards
+- [ ] Regional rollups
+- [ ] BigQuery migration
+- [ ] AI-generated narrative summaries
+- [ ] Action tracking ("What did you do about yesterday's score?")

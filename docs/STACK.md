@@ -1,94 +1,106 @@
-# CEM Automation — Stack Proposal
+# CEM Automation — Stack
 
-## Recommended Stack: Google Sheets + Apps Script + Gmail
+> Updated: 2026-03-31
 
-This stack aligns with your suggestion and fits the use case well: low setup cost, no separate hosting, and direct integration with email.
+---
+
+## Primary Stack: Apps Script + Sheets + Slack + Looker Studio
+
+| Layer | Technology | Role |
+|-------|-----------|------|
+| **Ingestion** | Google Apps Script + GmailApp | Fetch SMG emails, extract CSV attachments |
+| **Storage** | Google Sheets | Raw cumulative data, fact tables, config, logs |
+| **Compute** | Google Apps Script | Parse CSVs, infer daily deltas, run quality checks |
+| **Delivery** | Slack Bot API (via UrlFetchApp) | Daily leadership summaries, failure alerts |
+| **Visualization** | Looker Studio | Interactive dashboards, scheduled PDF reports |
+| **Scheduling** | Apps Script Time-driven Triggers | Daily pipeline at 2:30 AM with retry logic |
 
 ---
 
 ## Why This Stack?
 
-| Factor | Sheets / Apps Script / Gmail |
-|--------|------------------------------|
-| **Familiarity** | Most teams already use Google Workspace |
-| **Email integration** | Gmail API built into Apps Script |
-| **No hosting** | Runs in Google's cloud |
-| **Collaboration** | Share sheets with stakeholders |
-| **Charts** | Native Sheets charts for dashboards |
-| **Cost** | Free for typical usage |
-| **Learning curve** | Moderate; JavaScript-based |
+| Factor | Rating | Notes |
+|--------|--------|-------|
+| **Setup cost** | Very low | No servers, no deployment pipeline |
+| **Email integration** | Native | GmailApp is built into Apps Script |
+| **Collaboration** | Excellent | Sheets is familiar to everyone |
+| **Leadership access** | Excellent | Slack + Looker = zero-friction consumption |
+| **Cost** | Free | Within Google Workspace quotas |
+| **Maintainability** | Good | JavaScript, config-driven, no dependencies |
+| **Scalability** | Moderate | Sufficient for ~5 locations; BigQuery for beyond |
 
 ---
 
-## Component Roles
+## Component Details
 
-### 1. Google Sheets
+### Google Apps Script
 
-- **Raw_Data**: Append-only log of each report
-- **Daily_Data**: Derived daily scores and counts
-- **By_DayOfWeek**, **By_WeekOfMonth**: Aggregated views
-- **By_SalesChannel**, **By_TimeSlot**: When data available
-- **Config**: Settings, last run, column mappings
-- **Charts**: Embedded visualizations
+- **Language**: JavaScript (V8 runtime with modern ES6+ support)
+- **Execution limit**: 6 minutes per run (free tier)
+- **Daily trigger quota**: 90 minutes/day (free tier)
+- **APIs used**: `GmailApp`, `SpreadsheetApp`, `UrlFetchApp`, `PropertiesService`
+- **Deployment**: Bound to the Google Sheets spreadsheet
 
-### 2. Google Apps Script
+### Google Sheets
 
-- **Language**: JavaScript (ES5-ish, some ES6 support)
-- **Triggers**: Time-driven (daily) or manual
-- **APIs**: SpreadsheetApp, GmailApp, UrlFetchApp (if needed)
-- **Deployment**: Bound to the spreadsheet; no separate deploy step
+- **Cell limit**: 10 million cells per spreadsheet
+- **Capacity estimate**: ~90K cells/month/location (comfortable for years at 1–5 locations)
+- **Archival strategy**: Move completed months to archive sheet or BigQuery
 
-### 3. Gmail
+### Slack Bot API
 
-- **Source**: Inbox where CEM reports arrive
-- **Filter**: Search by sender, subject, attachment type
-- **Processing**: Apps Script reads attachment, parses CSV, writes to Sheets
+- **Method**: `chat.postMessage` via `UrlFetchApp.fetch()`
+- **Message format**: Block Kit (structured blocks with sections, fields, dividers)
+- **Authentication**: Bot token stored in `PropertiesService` (not in sheet cells)
+- **Channels**: Configurable per location via `config_locations` sheet
+- **Admin alerts**: Separate channel for pipeline failures
 
----
+### Looker Studio
 
-## Alternative Stacks (For Reference)
-
-| Stack | Pros | Cons |
-|-------|------|------|
-| **Python + local CSV** | Full control, pandas for analysis | Manual email handling, no built-in UI |
-| **Python + Google Sheets API** | Programmatic access | More setup, separate hosting |
-| **Node.js + Airtable** | Nice UI | Extra cost, different workflow |
-| **Power BI / Looker Studio** | Strong viz | Better for reporting than ingestion/ETL |
-
-For **ingestion + derivation + simple dashboards**, Sheets + Apps Script + Gmail is the most straightforward.
+- **Data source**: Google Sheets (direct connector)
+- **Pages**: Executive Overview, Wins & Risks, Deep Dive Explorer, Data Quality
+- **Filters**: Date, store, time bucket, sales channel
+- **Distribution**: Shareable link + optional scheduled email (PDF)
+- **Mobile**: Responsive layout for phone viewing
 
 ---
 
-## Setup Steps (High Level)
+## Migration Path: Sheets → BigQuery
 
-1. Create a new Google Sheet (e.g., "CEM Score Automation")
-2. Extensions → Apps Script
-3. Create `Code.gs`, `Parser.gs`, `Compute.gs`, `Gmail.gs`, `Config.gs`
-4. Add time-driven trigger: daily at chosen time
-5. Add custom menu: "CEM" → "Process Report" (manual fallback)
-6. Authorize Gmail and Sheets access on first run
-7. Configure Gmail search query (sender, subject) in Config.gs
+When to migrate:
+- More than 5 locations
+- Need for complex SQL analytics
+- Sheets cell limits approached
+- Sub-second dashboard load times required
 
----
-
-## Gmail Search Query (Example)
-
-```
-from:reports@yourcemprovider.com subject:"Daily CEM" filename:csv newer_than:3d
-```
-
-Adjust `from`, `subject`, and `filename` to match your actual CEM report emails.
+Migration steps:
+1. Create BigQuery dataset with same schema as `fact_daily_metric`
+2. Apps Script writes to BigQuery via `BigQuery.Jobs.insert()` (Advanced Service)
+3. Swap Looker Studio data source from Sheets to BigQuery
+4. Keep Sheets as config layer (targets, locations, runtime)
+5. Archive historical Sheets data to BigQuery
 
 ---
 
-## Limitations to Be Aware Of
+## Quotas & Limits to Monitor
 
-- **Apps Script quotas**: 6 min/execution, 20 min/day for triggers (free). Usually sufficient for daily processing.
-- **Sheet size**: 10M cells per spreadsheet. Raw_Data will grow; consider archiving old months.
-- **CSV parsing**: Built-in `Utilities.parseCsv()` works for simple CSVs; complex formats may need custom parsing.
+| Resource | Limit | Our Usage | Risk |
+|----------|-------|-----------|------|
+| Apps Script execution | 6 min/run | ~1–2 min expected | Low |
+| Daily trigger quota | 90 min/day | ~5–10 min (3 runs) | Low |
+| Gmail read quota | 10K messages/day | 5–15 messages/day | None |
+| Sheets cells | 10M per spreadsheet | ~90K/month/location | Low (years of runway) |
+| Slack messages | 1 msg/channel/second | 1–3 messages/day | None |
+| UrlFetchApp calls | 20K/day | <20/day | None |
 
 ---
 
-## Summary
+## Security Considerations
 
-**Recommended**: Google Sheets + Apps Script + Gmail for end-to-end automation with minimal infrastructure. Proceed with Phase 1 once sample CSV structure is confirmed.
+| Item | Approach |
+|------|----------|
+| Slack bot token | Stored in `PropertiesService.getScriptProperties()`, never in cells |
+| Gmail access | Apps Script OAuth; scoped to read-only for CEM emails |
+| Sheet access | Shared with leadership via standard Google Sheets permissions |
+| Looker Studio | Viewer access via link; no edit permissions for consumers |
+| Sensitive data | CEM scores are operational, not PII; minimal exposure risk |

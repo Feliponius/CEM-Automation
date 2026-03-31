@@ -1,47 +1,113 @@
 # CEM Report — Data Structure Reference
 
-This document describes the expected CSV structure for the CEM automation. Update this once you have actual sample reports.
+> Updated: 2026-03-31 — Based on actual SMG CSV samples
 
 ---
 
-## Minimum Required (Basic Daily Breakdown)
+## Source: SMG Daily Sales Channel Breakout by Time
 
-For Day of Week and Week of Month breakdowns, we need at least:
+Each day, 5 emails arrive from `SMGMailMgr@whysmg.com` with subject pattern:
+```
+SMG Reporting: Daily Sales Channel Breakout by Time - {TimeBucket}
+```
 
-| Column | Type | Example | Description |
-|--------|------|---------|-------------|
-| Report_Date | Date | 2026-03-06 | Date the report covers (or date generated) |
-| Cumulative_Count | Integer | 52 | Month-to-date total response count |
-| Cumulative_Score | Number | 62 or 0.62 | Month-to-date score (% or decimal) |
+Time buckets: `Breakfast`, `Lunch`, `Afternoon`, `Dinner Rush`, `Closing`
 
-**Note**: Column names may vary (e.g., "Count", "Score", "MTD Count"). The parser will need to map these to the standard names.
-
----
-
-## Extended (Sales Channel & Time Slot)
-
-If your reports include breakdowns by channel and time, we need one of these structures:
-
-### Option A: One Row Per Segment
-
-| Report_Date | Sales_Channel | Time_Slot | Count | Score |
-|-------------|---------------|-----------|-------|-------|
-| 2026-03-06 | Drive Thru | 10:30 AM to 2 PM | 18 | 65 |
-| 2026-03-06 | Dine In | 5 PM to 7 PM | 12 | 58 |
-| ... | ... | ... | ... | ... |
-
-### Option B: Wide Format (Multiple Columns)
-
-| Report_Date | Drive_Thru_Count | Drive_Thru_Score | Dine_In_Count | Dine_In_Score | ... |
-|-------------|------------------|------------------|---------------|---------------|-----|
-| 2026-03-06 | 18 | 65 | 12 | 58 | ... |
-
-Option A is easier to aggregate; Option B requires unpivoting.
+Each email contains **one CSV attachment** with cumulative month-to-date data.
 
 ---
 
-## Sales Channel Values (Canonical)
+## CSV Layout (Actual)
 
+The CSV is **not** a standard flat table. It has:
+
+### Header Block (Lines 1–8)
+
+```
+Comparison: 3/1/2026 - 3/31/2026,,,,,,,,,,
+,,,,,,,,,,
+Visit Date as of: 03/31/2026 01:30:53 CDT/CST,,,,,,,,,,
+Disclaimer: Scores with Visit Date applied during this date range may change...
+Filters Applied:,,,,,,,,,,
+Time of Day: 'Before 10:30 AM',,,,,,,,,,
+(blank lines)
+```
+
+**Extractable metadata:**
+| Field | Line | Parse Rule | Example |
+|-------|------|-----------|---------|
+| `date_range_start` | 1 | Before ` - ` | `3/1/2026` |
+| `date_range_end` | 1 | After ` - ` | `3/31/2026` |
+| `visit_date_as_of` | 3 | After `Visit Date as of: ` | `03/31/2026 01:30:53 CDT/CST` |
+| `time_bucket` | 6 | Inside single quotes after `Time of Day:` | `Before 10:30 AM` |
+
+The **business date** = `date_range_end` (the last day of the cumulative window).
+
+### Metric Block 1 (Lines ~10–17)
+
+```
+Store,Sales Channel Breakout,Count,Overall Satisfaction,,Taste of Food,,Fast Service,,Attentive/Friendly,
+,,,Score,n,Score,n,Score,n,Score,n
+04465 - West Lufkin FSU,,85,69%,85,75%,85,61%,85,72%,85
+04465 - West Lufkin FSU,Carry Out,6,83%,6,83%,6,83%,6,83%,6
+...
+```
+
+**Columns (0-indexed):**
+| Index | Field |
+|-------|-------|
+| 0 | Store (e.g., `04465 - West Lufkin FSU`) |
+| 1 | Sales Channel Breakout (blank = store total) |
+| 2 | Count (total survey responses for this row) |
+| 3 | Overall Satisfaction Score (%) |
+| 4 | Overall Satisfaction n |
+| 5 | Taste of Food Score (%) |
+| 6 | Taste of Food n |
+| 7 | Fast Service Score (%) |
+| 8 | Fast Service n |
+| 9 | Attentive/Friendly Score (%) |
+| 10 | Attentive/Friendly n |
+
+### Metric Block 2 (Lines ~18–25+)
+
+```
+Store,Sales Channel Breakout,Count,Cleanliness,,Portion Size of Food,,Order Accuracy Y/N,,,
+,,,Score,n,Score,n,Score,n,,
+04465 - West Lufkin FSU,,85,69%,85,70%,44,91%,85,,
+...
+```
+
+**Columns (0-indexed):**
+| Index | Field |
+|-------|-------|
+| 0 | Store |
+| 1 | Sales Channel Breakout |
+| 2 | Count |
+| 3 | Cleanliness Score (%) |
+| 4 | Cleanliness n |
+| 5 | Portion Size of Food Score (%) |
+| 6 | Portion Size of Food n |
+| 7 | Order Accuracy Y/N Score (%) |
+| 8 | Order Accuracy Y/N n |
+
+---
+
+## Important Parsing Notes
+
+### Per-metric `n` varies
+Not all respondents answer all questions. `Portion Size of Food` often has a smaller `n` than `Count`. Each metric's `n` must be stored independently for accurate daily inference.
+
+### Sentinel values
+- `**` appears when sample size is too small for reporting. Must map to `null`.
+
+### Aggregate vs channel rows
+- Row with **blank** Sales Channel Breakout = store-level aggregate
+- Named channel rows = channel-specific breakdown
+
+### Store ID parsing
+`04465 - West Lufkin FSU` → `store_id: "04465"`, `store_name: "West Lufkin FSU"`
+
+### Sales channel set (observed)
 - Carry Out
 - Curbside
 - Dine In
@@ -50,37 +116,74 @@ Option A is easier to aggregate; Option B requires unpivoting.
 - Mobile Dine In
 - Mobile Drive Thru
 
+Not all channels appear in every time bucket. Channels with zero responses are omitted.
+
+### Time bucket → Email subject mapping
+| Email Subject Suffix | `time_bucket` in CSV |
+|---------------------|----------------------|
+| Breakfast | Before 10:30 AM |
+| Lunch | 10:30 AM to 2 PM |
+| Afternoon | 2 PM to 5 PM |
+| Dinner Rush | 5PM to 7 PM |
+| Closing | After 7 PM |
+
 ---
 
-## Time Slot Values (Canonical)
+## All 7 Metrics (Canonical Names)
 
-- Before 10:30 AM
-- 10:30 AM to 2 PM
-- 2 PM to 5 PM
-- 5 PM to 7 PM
-- After 7 PM
+| Metric | Block | Primary? | Notes |
+|--------|-------|----------|-------|
+| `overall_satisfaction` | 1 | **Primary** | Top-line KPI |
+| `taste_of_food` | 1 | Secondary | |
+| `fast_service` | 1 | Secondary | |
+| `attentive_friendly` | 1 | Secondary | |
+| `cleanliness` | 2 | Secondary | |
+| `portion_size` | 2 | Secondary | n often differs from Count |
+| `order_accuracy` | 2 | Secondary | Y/N question |
 
 ---
 
-## Sample CSV (Minimum)
+## Target Schema: `fact_daily_metric`
 
-```csv
-Report_Date,Cumulative_Count,Cumulative_Score
-2026-03-01,12,55
-2026-03-02,24,52
-2026-03-03,36,53
-2026-03-04,42,54
-2026-03-05,48,56
-2026-03-06,52,62
+Long-form fact table at grain: one row per (business_date, store, time_bucket, sales_channel, metric).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `business_date` | DATE | End date from Comparison header |
+| `store_id` | STRING | e.g., `04465` |
+| `store_name` | STRING | e.g., `West Lufkin FSU` |
+| `time_bucket` | STRING | e.g., `Before 10:30 AM` |
+| `sales_channel` | STRING | e.g., `Drive Thru` (blank = `_TOTAL`) |
+| `metric_name` | STRING | e.g., `overall_satisfaction` |
+| `cum_score_pct` | FLOAT | Cumulative % from CSV |
+| `cum_n` | INTEGER | Cumulative n from CSV |
+| `cum_numerator` | INTEGER | Derived: round(cum_score_pct × cum_n) |
+| `daily_score_pct` | FLOAT | Inferred from delta |
+| `daily_n` | INTEGER | cum_n(today) − cum_n(yesterday) |
+| `daily_numerator` | INTEGER | cum_numerator(today) − cum_numerator(yesterday) |
+| `source_file_name` | STRING | Original CSV filename |
+| `message_id` | STRING | Gmail message ID |
+| `run_id` | STRING | Processing run identifier |
+| `loaded_at` | DATETIME | When this row was written |
+
+---
+
+## Daily Inference Math
+
+For each unique key (`store_id`, `time_bucket`, `sales_channel`, `metric_name`):
+
+```
+cum_numerator = round(cum_score_pct × cum_n)
+
+daily_n = cum_n(today) − cum_n(yesterday)
+daily_numerator = cum_numerator(today) − cum_numerator(yesterday)
+
+if daily_n > 0:
+  daily_score_pct = daily_numerator / daily_n
+else:
+  daily_score_pct = null  (no new responses)
 ```
 
----
+**Month boundary**: On day 1, yesterday's values are all zero.
 
-## Data Collection Checklist
-
-- [ ] Obtain 1–2 weeks of sample CSV reports
-- [ ] Document actual column names
-- [ ] Confirm whether reports are daily or less frequent
-- [ ] Check if Sales Channel / Time Slot columns exist
-- [ ] Note date format (YYYY-MM-DD, MM/DD/YYYY, etc.)
-- [ ] Note score format (0–100 vs 0–1)
+**Late responses**: Reprocess trailing 3 days on every run to capture updates.
