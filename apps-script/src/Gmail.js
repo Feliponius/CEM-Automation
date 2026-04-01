@@ -9,11 +9,9 @@
  * @returns {GmailMessage[]}
  */
 function searchCemEmails(afterDate, beforeDate) {
-  var query = CONFIG.GMAIL_QUERY_BASE + ' ' + CONFIG.GMAIL_EXCLUDE;
-  if (afterDate) query += ' after:' + afterDate;
-  if (beforeDate) query += ' before:' + beforeDate;
-
-  var threads = GmailApp.search(query, 0, 500);
+  var query = getGmailQuery(afterDate, beforeDate);
+  var limit = getConfigNumber('GMAIL_SEARCH_LIMIT', 500);
+  var threads = GmailApp.search(query, 0, limit);
   var messages = [];
 
   for (var t = 0; t < threads.length; t++) {

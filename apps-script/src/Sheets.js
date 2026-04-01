@@ -117,4 +117,36 @@ function initializeSheets() {
     ['key', 'value', 'description']);
   getOrCreateSheet(CONFIG.SHEET_NAMES.ALIAS_REPORT,
     ['run_id', 'file_name', 'raw_metric_name', 'time_bucket', 'date_range', 'detected_at']);
+
+  ensureRuntimeConfigDefaults();
+}
+
+/**
+ * Seed config_runtime with defaults if missing.
+ * Leaves existing values untouched so users can edit safely.
+ */
+function ensureRuntimeConfigDefaults() {
+  var sheet = getOrCreateSheet(CONFIG.SHEET_NAMES.CONFIG_RUNTIME, ['key', 'value', 'description']);
+  var data = sheet.getDataRange().getValues();
+  var existing = {};
+
+  for (var i = 1; i < data.length; i++) {
+    var key = String(data[i][0] || '').trim();
+    if (key) existing[key] = true;
+  }
+
+  var toAppend = [];
+  for (var d = 0; d < DEFAULT_RUNTIME_CONFIG.length; d++) {
+    var def = DEFAULT_RUNTIME_CONFIG[d];
+    if (!existing[def.key]) {
+      toAppend.push([def.key, def.value, def.description]);
+    }
+  }
+
+  if (toAppend.length > 0) {
+    var startRow = sheet.getLastRow() + 1;
+    sheet.getRange(startRow, 1, toAppend.length, 3).setValues(toAppend);
+  }
+
+  refreshRuntimeConfigCache();
 }

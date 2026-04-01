@@ -5,12 +5,17 @@
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Eleanor CEM')
     .addItem('Initialize Sheets', 'initializeSheets')
+    .addItem('Setup Automation Triggers', 'setupAutomationTriggers')
+    .addItem('Clear Automation Triggers', 'clearAutomationTriggers')
     .addSeparator()
     .addItem('Run Daily Pipeline', 'runDailyPipeline')
     .addItem('Backfill March (Ingest Only)', 'backfillMarchIngest')
     .addSeparator()
     .addItem('Compute Daily Deltas', 'recomputeDeltas')
     .addItem('Compute March Deltas Only', 'computeMarchDeltas')
+    .addSeparator()
+    .addItem('Generate Target Suggestions', 'generateTargetSuggestions')
+    .addItem('Send Slack Prototype (Yesterday)', 'sendSlackPrototypeForYesterday')
     .addToUi();
 }
 
@@ -29,9 +34,11 @@ function runDailyPipeline() {
     initializeSheets();
     var processedIds = getProcessedMessageIds();
 
-    var fiveDaysAgo = new Date();
-    fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
-    var afterDate = Utilities.formatDate(fiveDaysAgo, Session.getScriptTimeZone(), 'yyyy/MM/dd');
+    var lookbackDays = getConfigNumber('GMAIL_LOOKBACK_DAYS', 5);
+    var timezone = getConfigValue('TIMEZONE', Session.getScriptTimeZone());
+    var lookbackDate = new Date();
+    lookbackDate.setDate(lookbackDate.getDate() - lookbackDays);
+    var afterDate = Utilities.formatDate(lookbackDate, timezone, 'yyyy/MM/dd');
 
     var messages = searchCemEmails(afterDate, null);
     var emailsFound = messages.length;
@@ -56,6 +63,10 @@ function runDailyPipeline() {
     var missingBuckets = findMissingBuckets(bucketsFound);
     logAliasIssues(aliasIssues, runId);
     logRun(runId, 'success', emailsFound, filesProcessed, rowsWritten, missingBuckets, [], '');
+
+    if (getConfigBoolean('SLACK_AUTO_POST', false)) {
+      sendSlackPrototypeForYesterday();
+    }
 
     Logger.log('Pipeline complete. ' + filesProcessed + ' files, ' + rowsWritten + ' rows.');
 
@@ -121,9 +132,10 @@ function processOneMessage(message, runId) {
 // ─────────────────────────────────────────────────────────
 
 function findMissingBuckets(foundBuckets) {
+  var expectedBuckets = getExpectedTimeBuckets();
   var missing = [];
-  for (var i = 0; i < CONFIG.EXPECTED_TIME_BUCKETS.length; i++) {
-    var bucket = CONFIG.EXPECTED_TIME_BUCKETS[i];
+  for (var i = 0; i < expectedBuckets.length; i++) {
+    var bucket = expectedBuckets[i];
     if (foundBuckets.indexOf(bucket) === -1) {
       missing.push(bucket);
     }
@@ -158,6 +170,64 @@ function computeMarchDeltas() {
   Logger.log('Starting March 2026 delta computation...');
   computeDailyDeltas('2026-03');
   Logger.log('Done.');
+}
+
+function sendSlackPrototypeForYesterday() {
+  sendSlackPrototypeDaily(null);
+}
+
+function runRetryPipeline() {
+  Logger.log('Retry pipeline trigger fired.');
+  runDailyPipeline();
+}
+
+function setupAutomationTriggers() {
+  initializeSheets();
+  clearAutomationTriggers();
+
+  var hour = getConfigNumber('TRIGGER_HOUR', 2);
+  var minute = getConfigNumber('TRIGGER_MINUTE', 30);
+
+  ScriptApp.newTrigger('runDailyPipeline')
+    .timeBased()
+    .everyDays(1)
+    .atHour(hour)
+    .nearMinute(minute)
+    .create();
+
+  if (getConfigBoolean('RETRY_ENABLED', true)) {
+    var retry1Hour = getConfigNumber('RETRY1_HOUR', 3);
+    var retry1Min = getConfigNumber('RETRY1_MINUTE', 15);
+    var retry2Hour = getConfigNumber('RETRY2_HOUR', 3);
+    var retry2Min = getConfigNumber('RETRY2_MINUTE', 50);
+
+    ScriptApp.newTrigger('runRetryPipeline')
+      .timeBased()
+      .everyDays(1)
+      .atHour(retry1Hour)
+      .nearMinute(retry1Min)
+      .create();
+
+    ScriptApp.newTrigger('runRetryPipeline')
+      .timeBased()
+      .everyDays(1)
+      .atHour(retry2Hour)
+      .nearMinute(retry2Min)
+      .create();
+  }
+
+  Logger.log('Automation triggers set up from config_runtime.');
+}
+
+function clearAutomationTriggers() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    var handler = triggers[i].getHandlerFunction();
+    if (handler === 'runDailyPipeline' || handler === 'runRetryPipeline') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  Logger.log('Automation triggers cleared.');
 }
 
 // ─────────────────────────────────────────────────────────

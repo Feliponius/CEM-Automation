@@ -3,9 +3,6 @@
  */
 
 var CONFIG = {
-  GMAIL_QUERY_BASE: 'from:SMGMailMgr@whysmg.com subject:"SMG Reporting: Daily Sales Channel Breakout by Time" has:attachment filename:csv',
-  GMAIL_EXCLUDE: '-subject:"Daily Comparison"',
-
   SHEET_NAMES: {
     RAW_CUMULATIVE: 'raw_cumulative',
     FACT_DAILY: 'fact_daily_metric',
@@ -16,16 +13,6 @@ var CONFIG = {
     RUN_LOG: 'run_log',
     ALIAS_REPORT: 'alias_report'
   },
-
-  EXPECTED_TIME_BUCKETS: [
-    'Before 10:30 AM',
-    '10:30 AM to 2 PM',
-    '2 PM to 5 PM',
-    '5PM to 7 PM',
-    'After 7 PM'
-  ],
-
-  TRAILING_REPROCESS_DAYS: 3,
 
   RAW_HEADERS: [
     'business_date', 'date_range_start', 'date_range_end', 'visit_date_as_of',
@@ -41,6 +28,34 @@ var CONFIG = {
     'source_file_name', 'message_id', 'run_id', 'loaded_at'
   ]
 };
+
+var DEFAULT_RUNTIME_CONFIG = [
+  { key: 'GMAIL_FROM', value: 'SMGMailMgr@whysmg.com', description: 'Sender for SMG CEM emails' },
+  { key: 'GMAIL_SUBJECT_INCLUDE', value: 'SMG Reporting: Daily Sales Channel Breakout by Time', description: 'Required subject phrase' },
+  { key: 'GMAIL_SUBJECT_EXCLUDE', value: 'Daily Comparison', description: 'Excluded subject phrase' },
+  { key: 'GMAIL_LOOKBACK_DAYS', value: '5', description: 'Daily run lookback window in days' },
+  { key: 'GMAIL_SEARCH_LIMIT', value: '500', description: 'Max number of threads to scan per run' },
+  { key: 'EXPECTED_TIME_BUCKETS', value: 'Before 10:30 AM|10:30 AM to 2 PM|2 PM to 5 PM|5PM to 7 PM|After 7 PM', description: 'Pipe-separated expected buckets' },
+  { key: 'TRAILING_REPROCESS_DAYS', value: '3', description: 'Trailing days to recompute on each run' },
+  { key: 'TIMEZONE', value: 'America/Chicago', description: 'Business timezone' },
+  { key: 'TRIGGER_HOUR', value: '2', description: 'Primary daily trigger hour (0-23)' },
+  { key: 'TRIGGER_MINUTE', value: '30', description: 'Primary daily trigger minute (0-59)' },
+  { key: 'RETRY_ENABLED', value: 'true', description: 'Whether to schedule retry triggers' },
+  { key: 'RETRY1_HOUR', value: '3', description: 'Retry #1 hour' },
+  { key: 'RETRY1_MINUTE', value: '15', description: 'Retry #1 minute' },
+  { key: 'RETRY2_HOUR', value: '3', description: 'Retry #2 hour' },
+  { key: 'RETRY2_MINUTE', value: '50', description: 'Retry #2 minute' },
+  { key: 'SLACK_ENABLED', value: 'false', description: 'Master Slack send switch' },
+  { key: 'SLACK_AUTO_POST', value: 'false', description: 'Post Slack after daily run' },
+  { key: 'SLACK_BOT_TOKEN', value: '', description: 'Slack bot token (xoxb-...)' },
+  { key: 'SLACK_DEFAULT_CHANNEL', value: '', description: 'Production channel ID (e.g., C123...)' },
+  { key: 'SLACK_TEST_CHANNEL', value: '', description: 'Test channel ID (e.g., C123...)' },
+  { key: 'SLACK_USE_TEST_CHANNEL', value: 'true', description: 'If true, post to test channel' },
+  { key: 'SLACK_VERBOSITY', value: 'detailed', description: 'Slack format: brief|detailed' },
+  { key: 'SLACK_INCLUDE_SECONDARY', value: 'true', description: 'Include secondary metrics in Slack message' },
+  { key: 'TARGET_LOOKBACK_DAYS', value: '30', description: 'Days to analyze for target suggestions' },
+  { key: 'TARGET_MIN_SAMPLE', value: '5', description: 'Minimum daily sample to include in target suggestions' }
+];
 
 var METRIC_ALIASES = {
   'overall satisfaction': 'overall_satisfaction',
@@ -100,4 +115,77 @@ function normalizeTimeBucket(raw) {
   if (!raw) return raw;
   var key = raw.toLowerCase().replace(/^\s+|\s+$/g, '');
   return TIME_BUCKET_ALIASES[key] || raw;
+}
+
+var _runtimeConfigCache = null;
+
+function refreshRuntimeConfigCache() {
+  _runtimeConfigCache = null;
+}
+
+function getRuntimeConfigMap() {
+  if (_runtimeConfigCache) return _runtimeConfigCache;
+
+  var map = {};
+  var rows = readSheetData(CONFIG.SHEET_NAMES.CONFIG_RUNTIME);
+  for (var i = 0; i < rows.length; i++) {
+    var key = String(rows[i]['key'] || '').trim();
+    if (!key) continue;
+    map[key] = String(rows[i]['value'] || '').trim();
+  }
+
+  _runtimeConfigCache = map;
+  return map;
+}
+
+function getConfigValue(key, fallback) {
+  var map = getRuntimeConfigMap();
+  if (map.hasOwnProperty(key) && map[key] !== '') return map[key];
+  return fallback;
+}
+
+function getConfigNumber(key, fallback) {
+  var raw = getConfigValue(key, String(fallback));
+  var num = parseInt(raw, 10);
+  return isNaN(num) ? fallback : num;
+}
+
+function getConfigBoolean(key, fallback) {
+  var raw = String(getConfigValue(key, fallback ? 'true' : 'false')).toLowerCase();
+  return raw === 'true' || raw === '1' || raw === 'yes';
+}
+
+function getConfigList(key, fallbackList) {
+  var fallback = (fallbackList || []).join('|');
+  var raw = getConfigValue(key, fallback);
+  if (!raw) return fallbackList || [];
+  var pieces = raw.split('|');
+  var out = [];
+  for (var i = 0; i < pieces.length; i++) {
+    var val = pieces[i].trim();
+    if (val) out.push(val);
+  }
+  return out;
+}
+
+function getExpectedTimeBuckets() {
+  return getConfigList('EXPECTED_TIME_BUCKETS', [
+    'Before 10:30 AM',
+    '10:30 AM to 2 PM',
+    '2 PM to 5 PM',
+    '5PM to 7 PM',
+    'After 7 PM'
+  ]);
+}
+
+function getGmailQuery(afterDate, beforeDate) {
+  var from = getConfigValue('GMAIL_FROM', 'SMGMailMgr@whysmg.com');
+  var include = getConfigValue('GMAIL_SUBJECT_INCLUDE', 'SMG Reporting: Daily Sales Channel Breakout by Time');
+  var exclude = getConfigValue('GMAIL_SUBJECT_EXCLUDE', 'Daily Comparison');
+
+  var query = 'from:' + from + ' subject:\"' + include + '\" has:attachment filename:csv';
+  if (exclude) query += ' -subject:\"' + exclude + '\"';
+  if (afterDate) query += ' after:' + afterDate;
+  if (beforeDate) query += ' before:' + beforeDate;
+  return query;
 }
