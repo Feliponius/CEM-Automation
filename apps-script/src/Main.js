@@ -15,6 +15,13 @@ function onOpen() {
     .addItem('Compute March Deltas Only', 'computeMarchDeltas')
     .addSeparator()
     .addItem('Generate Target Suggestions', 'generateTargetSuggestions')
+    .addItem('Generate Simple Target Scaffold', 'generateSimpleTargetScaffold')
+    .addItem('Publish Simple Targets to Config', 'publishSimpleTargetsToConfig')
+    .addItem('Apply Suggested Targets to Config', 'applySuggestedTargetsToConfig')
+    .addSeparator()
+    .addItem('Run Diagnostics (Apr 1, 2026)', 'runDiagnosticsApr1')
+    .addItem('Run Diagnostics (Prompt Date)', 'runDiagnosticsPromptDate')
+    .addItem('Audit Date Mapping (March to Today)', 'auditDateMappingMarchToToday')
     .addItem('Send Slack Prototype (Yesterday)', 'sendSlackPrototypeForYesterday')
     .addToUi();
 }
@@ -88,7 +95,7 @@ function processOneMessage(message, runId) {
   var parsed = parseCemCsv(csv.csvText, csv.fileName);
   if (!parsed.records || parsed.records.length === 0) return null;
 
-  var businessDate = formatDateStr(parsed.meta.dateRangeEnd);
+  var businessDate = resolveBusinessDate(parsed.meta);
   var rawRows = [];
 
   for (var r = 0; r < parsed.records.length; r++) {
@@ -176,6 +183,29 @@ function sendSlackPrototypeForYesterday() {
   sendSlackPrototypeDaily(null);
 }
 
+function runDiagnosticsApr1() {
+  runDateGapDiagnostics('2026-04-01');
+}
+
+function runDiagnosticsPromptDate() {
+  var ui = SpreadsheetApp.getUi();
+  var response = ui.prompt(
+    'Run date diagnostics',
+    'Enter target business date (YYYY-MM-DD), e.g. 2026-04-01',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+
+  var targetDate = String(response.getResponseText() || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+    ui.alert('Invalid date format. Use YYYY-MM-DD.');
+    return;
+  }
+
+  var report = runDateGapDiagnostics(targetDate);
+  ui.alert('Diagnostics complete', report.summary, ui.ButtonSet.OK);
+}
+
 function runRetryPipeline() {
   Logger.log('Retry pipeline trigger fired.');
   runDailyPipeline();
@@ -235,6 +265,14 @@ function clearAutomationTriggers() {
 // ─────────────────────────────────────────────────────────
 
 function backfillMarchIngest() {
+  backfillIngestRange('2026/03/01', '2026/04/01', 'backfill_march');
+}
+
+function backfillMarchToTodayIngest() {
+  backfillIngestRange('2026/03/01', null, 'backfill_march_to_today');
+}
+
+function backfillIngestRange(afterDate, beforeDate, runPrefix) {
   var runId = 'backfill_march_' + new Date().getTime();
   var filesProcessed = 0;
   var rowsWritten = 0;
@@ -246,9 +284,11 @@ function backfillMarchIngest() {
     initializeSheets();
     var processedIds = getProcessedMessageIds();
 
-    var messages = searchCemEmails('2026/03/01', '2026/04/01');
+    var prefix = runPrefix || 'backfill';
+    runId = prefix + '_' + new Date().getTime();
+    var messages = searchCemEmails(afterDate, beforeDate);
     var emailsFound = messages.length;
-    Logger.log('Found ' + emailsFound + ' CEM emails for March 2026.');
+    Logger.log('Found ' + emailsFound + ' CEM emails for range after=' + afterDate + ' before=' + (beforeDate || '(none)') + '.');
 
     messages.sort(function(a, b) { return a.getDate() - b.getDate(); });
 
@@ -285,7 +325,7 @@ function backfillMarchIngest() {
         rawMetrics: metricNamesInFile
       });
 
-      var businessDate = formatDateStr(parsed.meta.dateRangeEnd);
+      var businessDate = resolveBusinessDate(parsed.meta);
       var rawRows = [];
 
       for (var r2 = 0; r2 < parsed.records.length; r2++) {
@@ -332,7 +372,7 @@ function backfillMarchIngest() {
 
     Logger.log('Ingest complete: ' + filesProcessed + ' new files, ' + rowsWritten + ' rows.');
     Logger.log('Time buckets: ' + allBuckets.join(', '));
-    Logger.log('NOW RUN "Compute March Deltas Only" separately.');
+    Logger.log('NOW RUN delta recomputation separately.');
 
   } catch (e) {
     logRun(runId, 'error', 0, filesProcessed, rowsWritten, [], [], e.message + '\n' + e.stack);

@@ -71,13 +71,23 @@ function computeDailyDeltas(onlyMonth) {
         var prevScorePct = parseFloat(prev['score_pct']);
         var prevN = parseInt(prev['metric_n'], 10);
         var prevNumerator = Math.round(prevScorePct * prevN);
+        var currentRangeStart = formatDateStr(current['date_range_start']);
+        var prevRangeStart = formatDateStr(prev['date_range_start']);
+        var baselineReset = (currentRangeStart && prevRangeStart && currentRangeStart !== prevRangeStart) || (cumN < prevN);
 
-        dailyN = cumN - prevN;
-        dailyNumerator = cumNumerator - prevNumerator;
-        if (dailyN > 0) {
-          dailyScorePct = dailyNumerator / dailyN;
-        } else if (dailyN === 0) {
-          dailyScorePct = null;
+        if (baselineReset) {
+          // Source cumulative baseline restarted (e.g. month boundary), so treat as fresh daily baseline.
+          dailyN = cumN;
+          dailyNumerator = cumNumerator;
+          if (dailyN > 0) dailyScorePct = dailyNumerator / dailyN;
+        } else {
+          dailyN = cumN - prevN;
+          dailyNumerator = cumNumerator - prevNumerator;
+          if (dailyN > 0) {
+            dailyScorePct = dailyNumerator / dailyN;
+          } else if (dailyN === 0) {
+            dailyScorePct = null;
+          }
         }
       } else {
         dailyN = cumN;

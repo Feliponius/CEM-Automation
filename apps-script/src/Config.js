@@ -11,7 +11,8 @@ var CONFIG = {
     CONFIG_RUNTIME: 'config_runtime',
     PROCESSED_MESSAGES: 'processed_messages',
     RUN_LOG: 'run_log',
-    ALIAS_REPORT: 'alias_report'
+    ALIAS_REPORT: 'alias_report',
+    DIAGNOSTIC_REPORT: 'diagnostic_report'
   },
 
   RAW_HEADERS: [
@@ -35,6 +36,7 @@ var DEFAULT_RUNTIME_CONFIG = [
   { key: 'GMAIL_SUBJECT_EXCLUDE', value: 'Daily Comparison', description: 'Excluded subject phrase' },
   { key: 'GMAIL_LOOKBACK_DAYS', value: '5', description: 'Daily run lookback window in days' },
   { key: 'GMAIL_SEARCH_LIMIT', value: '500', description: 'Max number of threads to scan per run' },
+  { key: 'BUSINESS_DATE_SOURCE', value: 'end_minus_1', description: 'How to assign business_date from Comparison range: end_minus_1|start|end' },
   { key: 'EXPECTED_TIME_BUCKETS', value: 'Before 10:30 AM|10:30 AM to 2 PM|2 PM to 5 PM|5PM to 7 PM|After 7 PM', description: 'Pipe-separated expected buckets' },
   { key: 'TRAILING_REPROCESS_DAYS', value: '3', description: 'Trailing days to recompute on each run' },
   { key: 'TIMEZONE', value: 'America/Chicago', description: 'Business timezone' },
@@ -54,7 +56,8 @@ var DEFAULT_RUNTIME_CONFIG = [
   { key: 'SLACK_VERBOSITY', value: 'detailed', description: 'Slack format: brief|detailed' },
   { key: 'SLACK_INCLUDE_SECONDARY', value: 'true', description: 'Include secondary metrics in Slack message' },
   { key: 'TARGET_LOOKBACK_DAYS', value: '30', description: 'Days to analyze for target suggestions' },
-  { key: 'TARGET_MIN_SAMPLE', value: '5', description: 'Minimum daily sample to include in target suggestions' }
+  { key: 'TARGET_MIN_SAMPLE', value: '5', description: 'Minimum daily sample to include in target suggestions' },
+  { key: 'TARGET_YELLOW_BUFFER_PCT', value: '0.05', description: 'Yellow threshold uses goal*(1-buffer), e.g. 0.05 means 5% below goal' }
 ];
 
 var METRIC_ALIASES = {

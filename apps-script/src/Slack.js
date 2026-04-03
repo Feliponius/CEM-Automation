@@ -32,45 +32,35 @@ function sendSlackPrototypeDaily(dateStr) {
 function buildDailySummary(targetDate) {
   var rows = readSheetData(CONFIG.SHEET_NAMES.FACT_DAILY);
   var dayRows = filterRowsByDate(rows, targetDate);
-  var previousDate = findPreviousDate(rows, targetDate);
-  var prevRows = previousDate ? filterRowsByDate(rows, previousDate) : [];
 
   if (dayRows.length === 0) {
     return {
       text: 'CEM Daily: no rows found for ' + targetDate,
       blocks: [
         { type: 'section', text: { type: 'mrkdwn', text: '*CEM Daily* | ' + targetDate } },
-        { type: 'section', text: { type: 'mrkdwn', text: 'No data found for this date in `fact_daily_metric`.' } }
+        { type: 'section', text: { type: 'mrkdwn', text: buildMissingDataMessage(targetDate) } }
       ]
     };
   }
 
   var metrics = aggregateTotalsForDate(dayRows);
-  var prevMetrics = aggregateTotalsForDate(prevRows);
   var overall = metrics['overall_satisfaction'] || null;
-  var prevOverall = prevMetrics['overall_satisfaction'] || null;
   var mtd = aggregateMtdByMetric(dayRows);
   var mtdOverall = mtd['overall_satisfaction'] || null;
+  var noIncrementalDaily = !overall || overall.dailyPct === null;
 
-  var overallStatus = statusForMetric(
-    'overall_satisfaction',
-    targetDate,
-    overall ? overall.dailyPct : null
-  );
-  var overallDelta = calcDelta(overall, prevOverall);
+  var overallStatus = statusForMetric('overall_satisfaction', overall ? overall.dailyPct : null);
   var overallLine = overall
-    ? (overallStatus.emoji + ' *Overall Satisfaction:* ' + fmtPct(overall.dailyPct) +
-       ' ' + fmtDelta(overallDelta) + ' (' + overall.dailyN + ' responses)')
-    : '⚪ *Overall Satisfaction:* n/a';
-
-  var targetText = 'n/a';
-  if (overallStatus.target && overallStatus.target.greenMin !== null) {
-    targetText = '🟢>=' + fmtPct(overallStatus.target.greenMin) + ' | 🟡>=' + fmtPct(overallStatus.target.yellowMin);
+    ? ('Overall Satisfaction | ' + overallStatus.emoji + ' | ' + fmtPct(overall.dailyPct) +
+       ' | Goal ' + fmtPct(overallStatus.target ? overallStatus.target.goal : null))
+    : 'Overall Satisfaction | ⚪ | n/a | Goal n/a';
+  if (noIncrementalDaily) {
+    overallLine += ' | Note: no incremental daily responses detected';
   }
 
   var mtdLine = mtdOverall
-    ? ('*MTD Overall:* ' + fmtPct(mtdOverall.pct) + ' (' + mtdOverall.n + ' responses) | *Targets:* ' + targetText)
-    : ('*MTD Overall:* n/a | *Targets:* ' + targetText);
+    ? ('MTD Overall | ' + fmtPct(mtdOverall.pct) + ' | Goal ' + fmtPct(overallStatus.target ? overallStatus.target.goal : null))
+    : ('MTD Overall | n/a | Goal ' + fmtPct(overallStatus.target ? overallStatus.target.goal : null));
 
   var secondaryLines = [];
   for (var k = 0; k < METRIC_ORDER.length; k++) {
@@ -79,14 +69,16 @@ function buildDailySummary(targetDate) {
     var metric = metrics[metricName];
     if (!metric) continue;
 
-    var prevMetric = prevMetrics[metricName] || null;
-    var delta = calcDelta(metric, prevMetric);
-    var status = statusForMetric(metricName, targetDate, metric.dailyPct);
+    var status = statusForMetric(metricName, metric.dailyPct);
+    var metricDailyText = fmtPct(metric.dailyPct);
+    if (metric.dailyPct === null) {
+      metricDailyText = 'n/a (no incremental responses)';
+    }
     secondaryLines.push(
-      status.emoji + ' ' +
-      metricLabel(metricName) + ': ' +
-      fmtPct(metric.dailyPct) + ' ' +
-      fmtDelta(delta) + ' | n=' + metric.dailyN
+      metricLabel(metricName) + ' | ' +
+      status.emoji + ' | ' +
+      metricDailyText + ' | Goal ' +
+      fmtPct(status.target ? status.target.goal : null)
     );
   }
 
@@ -95,8 +87,8 @@ function buildDailySummary(targetDate) {
 
   var text = 'CEM Daily ' + targetDate + ' | Overall ' +
     (overall ? fmtPct(overall.dailyPct) : 'n/a') +
-    ' | MTD ' + (mtdOverall ? fmtPct(mtdOverall.pct) : 'n/a') +
-    ' | Δ ' + fmtDelta(overallDelta);
+    ' | Goal ' + fmtPct(overallStatus.target ? overallStatus.target.goal : null) +
+    ' | MTD ' + (mtdOverall ? fmtPct(mtdOverall.pct) : 'n/a');
 
   var blocks = [
     { type: 'header', text: { type: 'plain_text', text: 'CEM Daily | ' + targetDate } },
@@ -122,6 +114,13 @@ function buildDailySummary(targetDate) {
     elements: [{ type: 'mrkdwn', text: 'Config-driven prototype. Edit channel/verbosity/targets in config sheets.' }]
   });
 
+  if (noIncrementalDaily) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: 'Daily values are n/a because cumulative totals did not increase versus prior day for totals rows (`daily_n = 0`). MTD still reflects cumulative score.' }]
+    });
+  }
+
   return { text: text, blocks: blocks, attachmentColor: overallStatusToColor(overallStatus.emoji) };
 }
 
@@ -130,7 +129,7 @@ function aggregateTotalsForDate(dayRows) {
 
   for (var i = 0; i < dayRows.length; i++) {
     var r = dayRows[i];
-    if (String(r['sales_channel']) !== '_TOTAL') continue;
+    if (!isTotalsChannel(r['sales_channel'])) continue;
 
     var metric = String(r['metric_name']);
     if (!out[metric]) {
@@ -157,7 +156,7 @@ function aggregateMtdByMetric(dayRows) {
 
   for (var i = 0; i < dayRows.length; i++) {
     var r = dayRows[i];
-    if (String(r['sales_channel']) !== '_TOTAL') continue;
+    if (!isTotalsChannel(r['sales_channel'])) continue;
     var metric = String(r['metric_name']);
     if (!out[metric]) out[metric] = { num: 0, n: 0, pct: null };
 
@@ -173,6 +172,50 @@ function aggregateMtdByMetric(dayRows) {
     if (m.n > 0) m.pct = m.num / m.n;
   }
   return out;
+}
+
+function isTotalsChannel(channelVal) {
+  var channel = String(channelVal || '');
+  return channel === '_TOTAL' || channel === 'FSL_TOTAL';
+}
+
+function buildMissingDataMessage(targetDate) {
+  var status = inspectSourceReportStatusForDate(targetDate);
+  if (status.parsedMatches > 0) {
+    return 'No data found for this date in `fact_daily_metric` even though source report files appear to exist. This indicates an ingestion/transform gap.';
+  }
+  if (status.noCsvOnExpectedReceiveDay > 0) {
+    return 'No data found for this date in `fact_daily_metric`. Source report email(s) arrived but returned no CSV data (upstream reporting gap).';
+  }
+  return 'No data found for this date in `fact_daily_metric`. No source report with data was detected for this business date.';
+}
+
+function inspectSourceReportStatusForDate(targetDate) {
+  var tz = getConfigValue('TIMEZONE', Session.getScriptTimeZone());
+  var expectedReceiveDate = shiftYmdByDays(targetDate, 1);
+  var afterDate = shiftYmdByDays(targetDate, -2).replace(/-/g, '/');
+  var beforeDate = shiftYmdByDays(targetDate, 3).replace(/-/g, '/');
+  var messages = searchCemEmails(afterDate, beforeDate);
+
+  var parsedMatches = 0;
+  var noCsvOnExpectedReceiveDay = 0;
+
+  for (var i = 0; i < messages.length; i++) {
+    var msg = messages[i];
+    var recvYmd = Utilities.formatDate(msg.getDate(), tz, 'yyyy-MM-dd');
+    var csv = extractCsvAttachment(msg);
+
+    if (recvYmd === expectedReceiveDate && !csv) {
+      noCsvOnExpectedReceiveDay++;
+    }
+    if (!csv) continue;
+
+    var parsed = parseCemCsv(csv.csvText, csv.fileName);
+    var parsedDate = resolveBusinessDate(parsed.meta);
+    if (parsedDate === targetDate) parsedMatches++;
+  }
+
+  return { parsedMatches: parsedMatches, noCsvOnExpectedReceiveDay: noCsvOnExpectedReceiveDay };
 }
 
 function postSlackMessage(token, channel, text, blocks, attachmentColor) {
@@ -205,35 +248,12 @@ function postSlackMessage(token, channel, text, blocks, attachmentColor) {
   Logger.log('Slack post succeeded to channel ' + channel);
 }
 
-function calcDelta(metric, prevMetric) {
-  if (!metric || metric.dailyPct === null || !prevMetric || prevMetric.dailyPct === null) return null;
-  return metric.dailyPct - prevMetric.dailyPct;
-}
-
-function fmtDelta(delta) {
-  if (delta === null || typeof delta === 'undefined' || isNaN(delta)) return '(vs prior: n/a)';
-  var pp = delta * 100;
-  var sign = pp > 0 ? '+' : '';
-  var arrow = pp > 0 ? '↑' : (pp < 0 ? '↓' : '→');
-  return '(' + arrow + ' ' + sign + pp.toFixed(1) + 'pp vs prior)';
-}
-
 function filterRowsByDate(rows, ymd) {
   var out = [];
   for (var i = 0; i < rows.length; i++) {
     if (formatDateStr(rows[i]['business_date']) === ymd) out.push(rows[i]);
   }
   return out;
-}
-
-function findPreviousDate(rows, targetDate) {
-  var prev = null;
-  for (var i = 0; i < rows.length; i++) {
-    var d = formatDateStr(rows[i]['business_date']);
-    if (!d || d >= targetDate) continue;
-    if (!prev || d > prev) prev = d;
-  }
-  return prev;
 }
 
 function overallStatusToColor(emoji) {

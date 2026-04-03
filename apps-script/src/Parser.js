@@ -44,6 +44,34 @@ function parseHeaderMetadata(lines) {
 }
 
 /**
+ * Resolve business date from parsed report metadata.
+ * Configurable via BUSINESS_DATE_SOURCE=end_minus_1|start|end.
+ */
+function resolveBusinessDate(meta) {
+  var source = String(getConfigValue('BUSINESS_DATE_SOURCE', 'end_minus_1')).toLowerCase();
+  var startDate = formatDateStr(meta && meta.dateRangeStart);
+  var endDate = formatDateStr(meta && meta.dateRangeEnd);
+
+  if (source === 'end_minus_1') {
+    var prev = shiftYmdByDays(endDate, -1);
+    return prev || startDate || endDate || '';
+  }
+  if (source === 'end') return endDate || startDate || '';
+  return startDate || endDate || '';
+}
+
+function shiftYmdByDays(ymd, dayDelta) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(ymd || ''))) return '';
+  var parts = ymd.split('-');
+  var year = parseInt(parts[0], 10);
+  var month = parseInt(parts[1], 10) - 1;
+  var day = parseInt(parts[2], 10);
+  var d = new Date(year, month, day);
+  d.setDate(d.getDate() + dayDelta);
+  return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+/**
  * Parse store string like "04465 - West Lufkin FSU" into { id, name }.
  */
 function parseStoreId(storeStr) {
