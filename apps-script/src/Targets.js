@@ -43,63 +43,42 @@ function toDateYmd(v) {
   return s ? s.substring(0, 10) : null;
 }
 
-function resolveMetricTarget(metricName, businessDate, storeId, timeBucket, salesChannel) {
+function resolveMetricTarget(metricName) {
   var rows = readSheetData(CONFIG.SHEET_NAMES.CONFIG_TARGETS);
-  var targetDate = toDateYmd(businessDate);
   var best = null;
-  var bestScore = -1;
-  var bestStart = '';
 
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i];
     var rowMetric = String(row['metric_name'] || '').trim();
-    if (!rowMetric) continue;
-    if (rowMetric !== metricName && rowMetric !== '*') continue;
-
-    var start = toDateYmd(row['effective_start_date']) || '1900-01-01';
-    var end = toDateYmd(row['effective_end_date']) || '9999-12-31';
-    if (targetDate < start || targetDate > end) continue;
-
-    var score = 0;
-    if (!dimensionMatches(row['store_id'], storeId)) continue;
-    score += dimensionScore(row['store_id'], storeId);
-    if (!dimensionMatches(row['time_bucket'], timeBucket)) continue;
-    score += dimensionScore(row['time_bucket'], timeBucket);
-    if (!dimensionMatches(row['sales_channel'], salesChannel)) continue;
-    score += dimensionScore(row['sales_channel'], salesChannel);
-    if (rowMetric === metricName) score += 3;
-
-    if (score > bestScore || (score === bestScore && start > bestStart)) {
-      best = row;
-      bestScore = score;
-      bestStart = start;
-    }
+    if (!rowMetric || rowMetric !== metricName) continue;
+    best = row;
+    break;
   }
 
   if (!best) return null;
 
+  var goal = parsePercentValue(best['target_goal']);
+  var buffer = parsePercentValue(best['yellow_buffer_pct']);
+  if (buffer === null) buffer = parsePercentValue(getConfigValue('TARGET_YELLOW_BUFFER_PCT', '0.05'));
+  if (buffer === null) buffer = 0.05;
+  if (goal === null) return null;
+
+  var greenMin = goal;
+  var yellowMin = goal * (1 - buffer);
+  if (yellowMin < 0) yellowMin = 0;
+
   return {
-    greenMin: parsePercentValue(best['target_green_min']),
-    yellowMin: parsePercentValue(best['target_yellow_min']),
+    goal: goal,
+    yellowBufferPct: buffer,
+    greenMin: greenMin,
+    yellowMin: yellowMin,
     notes: String(best['notes'] || '')
   };
 }
 
-function dimensionMatches(ruleValue, actual) {
-  var r = String(ruleValue || '*').trim();
-  if (!r || r === '*') return true;
-  return String(actual || '').trim() === r;
-}
-
-function dimensionScore(ruleValue, actual) {
-  var r = String(ruleValue || '*').trim();
-  if (!r || r === '*') return 1;
-  return String(actual || '').trim() === r ? 2 : -99;
-}
-
-function statusForMetric(metricName, businessDate, metricPct) {
-  var target = resolveMetricTarget(metricName, businessDate, '*', '*', '_TOTAL');
-  if (!target || target.greenMin === null || target.yellowMin === null || metricPct === null) {
+function statusForMetric(metricName, metricPct) {
+  var target = resolveMetricTarget(metricName);
+  if (!target || metricPct === null) {
     return { emoji: '⚪', label: 'No target', target: target };
   }
 
@@ -163,8 +142,9 @@ function generateTargetSuggestions() {
     output.push([
       metricName,
       metricLabel(metricName),
-      round4(p65),
-      round4(p45),
+      round4(p65),                               // suggested_goal
+      round4(Math.max(0, 1 - (p45 / p65))),     // suggested yellow buffer based on P45
+      round4(p65 * (1 - Math.max(0, 1 - (p45 / p65)))), // implied yellow threshold
       round4(p50),
       round4(avg),
       vals.length,
@@ -175,7 +155,7 @@ function generateTargetSuggestions() {
   }
 
   var headers = [
-    'metric_name', 'metric_label', 'suggested_green_min', 'suggested_yellow_min',
+    'metric_name', 'metric_label', 'suggested_goal', 'suggested_yellow_buffer_pct', 'implied_yellow_min',
     'median', 'average', 'sample_days', 'lookback_start', 'lookback_end', 'notes'
   ];
   var sheet = getOrCreateSheet('target_suggestions', headers);
@@ -191,4 +171,164 @@ function generateTargetSuggestions() {
 
 function round4(v) {
   return Math.round(v * 10000) / 10000;
+}
+
+/**
+ * Create a simple manual target scaffold with one row per metric.
+ * This intentionally avoids time-bucket/channel/store permutations.
+ */
+function generateSimpleTargetScaffold() {
+  initializeSheets();
+
+  var defaultBuffer = parsePercentValue(getConfigValue('TARGET_YELLOW_BUFFER_PCT', '0.05'));
+  if (defaultBuffer === null) defaultBuffer = 0.05;
+
+  var rows = [];
+  for (var i = 0; i < METRIC_ORDER.length; i++) {
+    var metric = METRIC_ORDER[i];
+    rows.push([
+      metric,
+      metricLabel(metric),
+      '',             // target_goal (user input)
+      defaultBuffer,  // yellow buffer
+      '',             // computed yellow min (formula preview)
+      'Set goal and buffer. Green=goal, Yellow=goal*(1-buffer), Red<Yellow.'
+    ]);
+  }
+
+  var headers = [
+    'metric_name',
+    'metric_label',
+    'target_goal',
+    'yellow_buffer_pct',
+    'computed_yellow_min',
+    'notes'
+  ];
+  var sheet = getOrCreateSheet('target_scaffold_simple', headers);
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length).clearContent();
+  }
+  sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  Logger.log('Generated target_scaffold_simple. Fill target_goal and optional yellow_buffer_pct, then run publishSimpleTargetsToConfig().');
+}
+
+/**
+ * Publish simple metric-only targets into config_targets.
+ * Scope is fixed to totals-only to avoid permutations:
+ *   store_id=*, time_bucket=*, sales_channel=_TOTAL
+ */
+function publishSimpleTargetsToConfig() {
+  initializeSheets();
+
+  var scaffold = readSheetData('target_scaffold_simple');
+  if (!scaffold || scaffold.length === 0) {
+    throw new Error('target_scaffold_simple is empty. Run generateSimpleTargetScaffold() first.');
+  }
+
+  var defaultBuffer = parsePercentValue(getConfigValue('TARGET_YELLOW_BUFFER_PCT', '0.05'));
+  if (defaultBuffer === null) defaultBuffer = 0.05;
+
+  var payloadRows = [];
+  for (var i = 0; i < scaffold.length; i++) {
+    var s = scaffold[i];
+    var metricName = String(s['metric_name'] || '').trim();
+    if (!metricName) continue;
+
+    var goal = parsePercentValue(s['target_goal']);
+    var buffer = parsePercentValue(s['yellow_buffer_pct']);
+    if (buffer === null) buffer = defaultBuffer;
+    if (goal === null) continue;
+    if (buffer < 0) buffer = 0;
+    if (buffer > 0.99) buffer = 0.99;
+
+    var note = String(s['notes'] || '').trim();
+    note = (note ? note + ' | ' : '') + 'goal=' + round4(goal) + ',buffer=' + round4(buffer);
+
+    payloadRows.push([
+      metricName,
+      goal,
+      buffer,
+      note || 'Published from target_scaffold_simple'
+    ]);
+  }
+
+  if (payloadRows.length === 0) {
+    throw new Error('No valid rows in target_scaffold_simple. Fill target_goal values.');
+  }
+
+  var sheet = getOrCreateSheet(CONFIG.SHEET_NAMES.CONFIG_TARGETS, [
+    'metric_name', 'target_goal', 'yellow_buffer_pct', 'notes'
+  ]);
+
+  var dedup = {};
+  for (var p = 0; p < payloadRows.length; p++) {
+    dedup[payloadRows[p][0]] = payloadRows[p];
+  }
+  var finalRows = [['metric_name', 'target_goal', 'yellow_buffer_pct', 'notes']];
+  var keys = Object.keys(dedup);
+  for (var k = 0; k < keys.length; k++) {
+    finalRows.push(dedup[keys[k]]);
+  }
+  sheet.clearContents();
+  sheet.getRange(1, 1, finalRows.length, 4).setValues(finalRows);
+  sheet.getRange(1, 1, 1, 4).setFontWeight('bold');
+  sheet.setFrozenRows(1);
+
+  Logger.log('Published ' + (finalRows.length - 1) + ' simple metric targets to config_targets.');
+}
+
+/**
+ * Apply rows from target_suggestions into config_targets as baseline targets.
+ * Replaces existing open-ended baseline rows for the same scope+metric.
+ */
+function applySuggestedTargetsToConfig() {
+  initializeSheets();
+  var defaultBuffer = parsePercentValue(getConfigValue('TARGET_YELLOW_BUFFER_PCT', '0.05'));
+  if (defaultBuffer === null) defaultBuffer = 0.05;
+
+  var suggestions = readSheetData('target_suggestions');
+  if (!suggestions || suggestions.length === 0) {
+    throw new Error('No rows found in target_suggestions. Run generateTargetSuggestions() first.');
+  }
+
+  var payloadRows = [];
+  for (var i = 0; i < suggestions.length; i++) {
+    var s = suggestions[i];
+    var metricName = String(s['metric_name'] || '').trim();
+    var goal = parsePercentValue(s['suggested_goal']);
+    var buffer = parsePercentValue(s['suggested_yellow_buffer_pct']);
+    if (buffer === null) buffer = defaultBuffer;
+    if (!metricName) continue;
+    if (goal === null) continue;
+
+    payloadRows.push([
+      metricName,
+      goal,
+      buffer,
+      'Auto-seeded from target_suggestions'
+    ]);
+  }
+
+  if (payloadRows.length === 0) {
+    throw new Error('No valid target rows to apply.');
+  }
+
+  var sheet = getOrCreateSheet(CONFIG.SHEET_NAMES.CONFIG_TARGETS, [
+    'metric_name', 'target_goal', 'yellow_buffer_pct', 'notes'
+  ]);
+  var dedup = {};
+  for (var p = 0; p < payloadRows.length; p++) {
+    dedup[payloadRows[p][0]] = payloadRows[p];
+  }
+  var finalRows = [['metric_name', 'target_goal', 'yellow_buffer_pct', 'notes']];
+  var keys = Object.keys(dedup);
+  for (var k = 0; k < keys.length; k++) {
+    finalRows.push(dedup[keys[k]]);
+  }
+  sheet.clearContents();
+  sheet.getRange(1, 1, finalRows.length, 4).setValues(finalRows);
+  sheet.getRange(1, 1, 1, 4).setFontWeight('bold');
+  sheet.setFrozenRows(1);
+
+  Logger.log('Applied ' + (finalRows.length - 1) + ' suggested targets to simple config_targets.');
 }
