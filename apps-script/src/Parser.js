@@ -17,9 +17,10 @@ function parseHeaderMetadata(lines) {
 
   for (var i = 0; i < Math.min(lines.length, 10); i++) {
     var line = lines[i];
+    var cleanLine = line.replace(/^"/, '');
 
-    if (line.indexOf('Comparison:') === 0) {
-      var rangePart = line.replace('Comparison:', '').split(',')[0].trim();
+    if (cleanLine.indexOf('Comparison:') === 0) {
+      var rangePart = cleanLine.replace('Comparison:', '').split(',')[0].trim();
       var parts = rangePart.split(' - ');
       if (parts.length === 2) {
         meta.dateRangeStart = parts[0].trim();
@@ -184,10 +185,88 @@ function parseBlockData(rows, block, nextBlockStart) {
 }
 
 /**
+ * Detect monthly comparison blocks (Store + Count header, Current/LY sub-headers).
+ * These use a wider column layout: 5 columns per metric instead of 2.
+ * @param {string[][]} rows - Parsed CSV rows
+ * @returns {Object[]} Array of { headerRowIdx, metricNames, dataStartIdx, isMonthly }
+ */
+function detectMonthlyBlocks(rows) {
+  var blocks = [];
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    if (row.length < 3) continue;
+    if (row[0] && row[0].trim() === 'Store' &&
+        row[1] && row[1].trim() === 'Count' &&
+        !(row[2] && row[2].trim() === 'Sales Channel Breakout')) {
+
+      var metricNames = [];
+      var rawMetricNames = [];
+      for (var c = 2; c < row.length; c++) {
+        var cell = (row[c] || '').trim();
+        if (cell && cell !== '' && cell !== 'Score' && cell !== 'n' &&
+            cell !== 'Count' && cell !== 'Current' &&
+            cell !== 'Last Year (Same Period)' && cell !== 'Difference') {
+          metricNames.push({ colIdx: c, rawName: cell, canonical: normalizeMetricName(cell) });
+          rawMetricNames.push(cell);
+        }
+      }
+
+      blocks.push({
+        headerRowIdx: i,
+        metricNames: metricNames,
+        rawMetricNames: rawMetricNames,
+        dataStartIdx: i + 3,
+        isMonthly: true
+      });
+    }
+  }
+
+  return blocks;
+}
+
+/**
+ * Parse data rows from a monthly comparison block.
+ * No Sales Channel Breakout column; Count is at col 1.
+ * Current Score/n are at the metric's colIdx and colIdx+1.
+ */
+function parseMonthlyBlockData(rows, block, nextBlockStart) {
+  var records = [];
+
+  for (var r = block.dataStartIdx; r < nextBlockStart; r++) {
+    var row = rows[r];
+    if (!row || !row[0] || row[0].trim() === '') continue;
+
+    var store = parseStoreId(row[0]);
+    var surveyCount = parseN(row[1]);
+
+    for (var m = 0; m < block.metricNames.length; m++) {
+      var metric = block.metricNames[m];
+      var scorePct = parseScore(row[metric.colIdx]);
+      var metricN = parseN(row[metric.colIdx + 1]);
+
+      records.push({
+        storeId: store.id,
+        storeName: store.name,
+        salesChannel: '_TOTAL',
+        surveyCount: surveyCount,
+        metricRawName: metric.rawName,
+        metricName: metric.canonical,
+        scorePct: scorePct,
+        metricN: metricN
+      });
+    }
+  }
+
+  return records;
+}
+
+/**
  * Parse a full CSV string into structured records.
+ * Auto-detects daily vs monthly comparison format.
  * @param {string} csvText - Raw CSV text
  * @param {string} fileName - Source filename (for logging)
- * @returns {Object} { meta, records, aliasIssues }
+ * @returns {Object} { meta, records, aliasIssues, isMonthly }
  */
 function parseCemCsv(csvText, fileName) {
   var lines = csvText.split(/\r?\n/);
@@ -199,6 +278,13 @@ function parseCemCsv(csvText, fileName) {
   }
 
   var blocks = detectBlocks(rows);
+  var isMonthly = false;
+
+  if (blocks.length === 0) {
+    blocks = detectMonthlyBlocks(rows);
+    isMonthly = blocks.length > 0;
+  }
+
   var allRecords = [];
   var aliasIssues = [];
 
@@ -217,13 +303,16 @@ function parseCemCsv(csvText, fileName) {
       }
     }
 
-    var records = parseBlockData(rows, block, nextStart);
+    var records = isMonthly
+      ? parseMonthlyBlockData(rows, block, nextStart)
+      : parseBlockData(rows, block, nextStart);
     allRecords = allRecords.concat(records);
   }
 
   return {
     meta: meta,
     records: allRecords,
-    aliasIssues: aliasIssues
+    aliasIssues: aliasIssues,
+    isMonthly: isMonthly
   };
 }

@@ -23,6 +23,10 @@ function onOpen() {
     .addItem('Run Diagnostics (Prompt Date)', 'runDiagnosticsPromptDate')
     .addItem('Audit Date Mapping (March to Today)', 'auditDateMappingMarchToToday')
     .addItem('Send Slack Prototype (Yesterday)', 'sendSlackPrototypeForYesterday')
+    .addSeparator()
+    .addItem('Run Monthly Reconciliation (Previous Month)', 'runMonthlyReconciliation')
+    .addItem('Run Monthly Reconciliation (Prompt Month)', 'runMonthlyReconciliationPrompt')
+    .addItem('Setup Monthly Reconciliation Trigger', 'setupMonthlyReconciliationTrigger')
     .addToUi();
 }
 
@@ -95,6 +99,19 @@ function processOneMessage(message, runId) {
   var parsed = parseCemCsv(csv.csvText, csv.fileName);
   if (!parsed.records || parsed.records.length === 0) return null;
 
+  var subject = message.getSubject();
+  var monthlyFromSubject = isMonthlySubject(subject);
+  var isMonthly = parsed.isMonthly || monthlyFromSubject;
+
+  if (!parsed.meta.timeBucket) {
+    var subjectBucket = resolveBucketFromSubject(subject);
+    if (subjectBucket) parsed.meta.timeBucket = subjectBucket;
+  }
+
+  if (isMonthly) {
+    return processMonthlyMessage(parsed, csv, message, runId);
+  }
+
   var businessDate = resolveBusinessDate(parsed.meta);
   var rawRows = [];
 
@@ -130,7 +147,57 @@ function processOneMessage(message, runId) {
   return {
     rowCount: rawRows.length,
     timeBucket: parsed.meta.timeBucket,
-    aliasIssues: parsed.aliasIssues
+    aliasIssues: parsed.aliasIssues,
+    isMonthly: false
+  };
+}
+
+/**
+ * Process a monthly report email. Stores in raw_monthly instead of raw_cumulative.
+ * Uses the end date of the comparison range as the month identifier (YYYY-MM).
+ */
+function processMonthlyMessage(parsed, csv, message, runId) {
+  var endDate = formatDateStr(parsed.meta.dateRangeEnd);
+  var monthStr = endDate ? endDate.substring(0, 7) : '';
+
+  var rawRows = [];
+
+  for (var r = 0; r < parsed.records.length; r++) {
+    var rec = parsed.records[r];
+    if (!rec.metricName) continue;
+    if (rec.scorePct === null && rec.metricN === null) continue;
+
+    rawRows.push([
+      monthStr,
+      formatDateStr(parsed.meta.dateRangeStart),
+      formatDateStr(parsed.meta.dateRangeEnd),
+      parsed.meta.visitDateAsOf,
+      parsed.meta.timeBucket,
+      rec.storeId,
+      rec.storeName,
+      rec.salesChannel,
+      rec.surveyCount,
+      rec.metricName,
+      rec.scorePct,
+      rec.metricN,
+      csv.fileName,
+      message.getId(),
+      runId,
+      new Date().toISOString()
+    ]);
+  }
+
+  if (rawRows.length > 0) {
+    appendRows(CONFIG.SHEET_NAMES.RAW_MONTHLY, rawRows, CONFIG.MONTHLY_RAW_HEADERS);
+  }
+
+  Logger.log('Monthly report processed: ' + monthStr + ' / ' + parsed.meta.timeBucket + ' — ' + rawRows.length + ' rows.');
+
+  return {
+    rowCount: rawRows.length,
+    timeBucket: parsed.meta.timeBucket,
+    aliasIssues: parsed.aliasIssues,
+    isMonthly: true
   };
 }
 

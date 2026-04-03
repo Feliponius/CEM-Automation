@@ -101,6 +101,7 @@ function logRun(runId, status, emailsFound, filesParsed, rowsWritten, missingBuc
  */
 function initializeSheets() {
   getOrCreateSheet(CONFIG.SHEET_NAMES.RAW_CUMULATIVE, CONFIG.RAW_HEADERS);
+  getOrCreateSheet(CONFIG.SHEET_NAMES.RAW_MONTHLY, CONFIG.MONTHLY_RAW_HEADERS);
   getOrCreateSheet(CONFIG.SHEET_NAMES.FACT_DAILY, CONFIG.FACT_HEADERS);
   getOrCreateSheet(CONFIG.SHEET_NAMES.PROCESSED_MESSAGES,
     ['message_id', 'subject', 'date_received', 'run_id', 'processed_at']);

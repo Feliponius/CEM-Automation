@@ -1,0 +1,12 @@
+# Credentials
+.env
+
+# Downloaded samples (may contain sensitive data)
+samples/*.csv
+!samples/example_cumulative.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

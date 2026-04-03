@@ -54,6 +54,54 @@ SMG Reporting: Daily Sales Channel Breakout by Time - {TimeBucket}
 
 See `samples/` for real CSV examples from SMG reports.
 
+## Monthly Reconciliation
+
+A secondary report runs once a month (2nd day, 6 AM) to compare the final cumulative totals for the previous month against the sum of all inferred daily values. This serves two purposes:
+
+1. **Integrity check** — catches any drift between cumulative-based inference and actual totals
+2. **Last-day capture** — fills in the final day of the month that the `end_minus_1` business date mapping may miss
+
+Run manually from the Eleanor CEM menu: **Run Monthly Reconciliation (Previous Month)** or **Run Monthly Reconciliation (Prompt Month)**.
+
+## Web App API
+
+The Apps Script can be deployed as a web app to enable external tools (Cursor, scripts, etc.) to query sheet data via HTTP.
+
+### Setup
+
+1. In the Apps Script editor, go to **Deploy > New deployment**
+2. Select type: **Web app**
+3. Execute as: **Me**
+4. Who has access: **Anyone** (protected by shared secret, not public data)
+5. Click **Deploy** and copy the URL
+6. In the Google Sheet's `config_runtime` sheet, add a row: `WEB_APP_SECRET` = a strong random value
+7. Create a `.env` file locally (copy from `.env.example`) and fill in `WEB_APP_URL` and `WEB_APP_SECRET`
+
+### Query from terminal
+
+```bash
+python query_sheet.py summary --month 2026-03
+python query_sheet.py query_fact --date 2026-03-15 --metric overall_satisfaction
+python query_sheet.py list_sheets
+python query_sheet.py run_info
+python query_sheet.py schema
+```
+
+### Available API actions
+
+| Action | Method | Description |
+|--------|--------|-------------|
+| `summary` | GET | High-level stats: date range, metrics, latest day summary |
+| `query_fact` | GET | Query `fact_daily_metric` with filters (month, date, metric, bucket, channel) |
+| `query_raw` | GET | Query `raw_cumulative` with filters |
+| `read_sheet` | GET | Read any sheet by name |
+| `list_sheets` | GET | List all sheets with row/column counts |
+| `run_info` | GET | Recent pipeline run log entries |
+| `schema` | GET | Sheet headers and dimensions |
+| `reconcile` | GET | Read monthly reconciliation results |
+| `recompute_deltas` | POST | Trigger delta recomputation |
+| `reconcile_month` | POST | Trigger reconciliation for a specific month |
+
 ## Quick Start
 
 See [PLAN.md](docs/PLAN.md) for implementation phases. Phase 1 = core pipeline (Gmail → parse → store → infer daily).

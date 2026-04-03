@@ -5,6 +5,7 @@
 var CONFIG = {
   SHEET_NAMES: {
     RAW_CUMULATIVE: 'raw_cumulative',
+    RAW_MONTHLY: 'raw_monthly',
     FACT_DAILY: 'fact_daily_metric',
     CONFIG_TARGETS: 'config_targets',
     CONFIG_LOCATIONS: 'config_locations',
@@ -26,6 +27,13 @@ var CONFIG = {
     'business_date', 'store_id', 'store_name', 'time_bucket', 'sales_channel',
     'metric_name', 'cum_score_pct', 'cum_n', 'cum_numerator',
     'daily_score_pct', 'daily_n', 'daily_numerator',
+    'source_file_name', 'message_id', 'run_id', 'loaded_at'
+  ],
+
+  MONTHLY_RAW_HEADERS: [
+    'month', 'date_range_start', 'date_range_end', 'visit_date_as_of',
+    'time_bucket', 'store_id', 'store_name', 'sales_channel', 'survey_count',
+    'metric_name', 'score_pct', 'metric_n',
     'source_file_name', 'message_id', 'run_id', 'loaded_at'
   ]
 };
@@ -57,7 +65,10 @@ var DEFAULT_RUNTIME_CONFIG = [
   { key: 'SLACK_INCLUDE_SECONDARY', value: 'true', description: 'Include secondary metrics in Slack message' },
   { key: 'TARGET_LOOKBACK_DAYS', value: '30', description: 'Days to analyze for target suggestions' },
   { key: 'TARGET_MIN_SAMPLE', value: '5', description: 'Minimum daily sample to include in target suggestions' },
-  { key: 'TARGET_YELLOW_BUFFER_PCT', value: '0.05', description: 'Yellow threshold uses goal*(1-buffer), e.g. 0.05 means 5% below goal' }
+  { key: 'TARGET_YELLOW_BUFFER_PCT', value: '0.05', description: 'Yellow threshold uses goal*(1-buffer), e.g. 0.05 means 5% below goal' },
+  { key: 'WEB_APP_SECRET', value: '', description: 'Shared secret for Web App API access. Generate a strong random value before deploying.' },
+  { key: 'MONTHLY_RECONCILIATION_DAY', value: '2', description: 'Day of month to run reconciliation (1-28)' },
+  { key: 'MONTHLY_RECONCILIATION_HOUR', value: '6', description: 'Hour to run monthly reconciliation (0-23)' }
 ];
 
 var METRIC_ALIASES = {
@@ -97,8 +108,32 @@ var SUBJECT_TO_BUCKET = {
   '10:30 - 2:0': '10:30 AM to 2 PM',
   'afternoon': '2 PM to 5 PM',
   'dinner rush': '5PM to 7 PM',
-  'closing': 'After 7 PM'
+  'closing': 'After 7 PM',
+  'breakfast month': 'Before 10:30 AM',
+  'lunch month': '10:30 AM to 2 PM',
+  '10:30 - 2:0 month': '10:30 AM to 2 PM',
+  'afternoon month': '2 PM to 5 PM',
+  'dinner rush month': '5PM to 7 PM',
+  'closing month': 'After 7 PM'
 };
+
+/**
+ * Check if an email subject indicates a monthly report (contains "Month" suffix).
+ */
+function isMonthlySubject(subject) {
+  return /month\s*$/i.test(subject);
+}
+
+/**
+ * Resolve time bucket from email subject using SUBJECT_TO_BUCKET mapping.
+ * Returns null if no match found.
+ */
+function resolveBucketFromSubject(subject) {
+  var raw = extractBucketFromSubject(subject);
+  if (!raw) return null;
+  var key = raw.toLowerCase().replace(/^\s+|\s+$/g, '');
+  return SUBJECT_TO_BUCKET[key] || null;
+}
 
 /**
  * Normalize time bucket strings.
